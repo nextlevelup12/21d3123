@@ -1,0 +1,15 @@
+{
+  "name": "cyclone-auth-api",
+  "version": "2.0.0",
+  "description": "API de verificacao com codigo temporario via DM",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

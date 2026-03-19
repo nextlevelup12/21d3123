@@ -210,16 +210,24 @@ app.post("/bind-hwid", async (req, res) => {
             const member = await memberRes.json();
             username = getMemberName(member);
 
-            // Pega o nome do cargo mais alto que o membro tem
-            // (ignora @everyone que todo mundo tem)
+            // Pega o cargo mais relevante do membro
             if (member.roles && member.roles.length > 0) {
                 const rolesRes = await discordFetch(`/guilds/${GUILD_ID}/roles`);
                 if (rolesRes.ok) {
                     const allRoles = await rolesRes.json();
-                    // Filtra pelos cargos que o membro tem, ordena por posicao (maior = mais importante)
+
                     const memberRoles = allRoles
                         .filter(r => member.roles.includes(r.id))
+                        // Remove @everyone (id igual ao guild_id) e cargos sem nome util
+                        .filter(r => r.id !== GUILD_ID)
+                        // Remove cargos cujo nome comeca com emoji ou simbolo Unicode
+                        // (mantém apenas cargos cujo primeiro char é ASCII letra/numero/espaco)
+                        .filter(r => {
+                            const first = r.name.codePointAt(0);
+                            return first < 128; // ASCII puro = sem emoji
+                        })
                         .sort((a, b) => b.position - a.position);
+
                     if (memberRoles.length > 0)
                         cargo = memberRoles[0].name;
                 }

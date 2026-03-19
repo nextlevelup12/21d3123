@@ -89,7 +89,7 @@ app.post("/request-code", async (req, res) => {
         const msgRes = await discordFetch(`/channels/${dm.id}/messages`, {
             method: "POST",
             body: JSON.stringify({
-                content: `🔐 **Cyclone Store | Loader**\n\n> Seu codigo de verificacao e:\n\n## \`${code}\`\n\n⏱️ Expira em **5 minutos**\n🚫 Nunca compartilhe este codigo com ninguem`
+                content: `## 🔐 Cyclone Store | Loader\n\n━━━━━━━━━━━━━━━━━━━━━\n\n🎫 **Seu codigo de acesso:**\n\`\`\`\n${code}\n\`\`\`\n⏱️ Expira em **5 minutos**\n🚫 **Nunca** compartilhe este codigo\n\n━━━━━━━━━━━━━━━━━━━━━`
             })
         });
 

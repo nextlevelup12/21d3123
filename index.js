@@ -210,7 +210,7 @@ app.post("/bind-hwid", async (req, res) => {
             const member = await memberRes.json();
             username = getMemberName(member);
 
-            // Pega o cargo mais relevante do membro
+            // Pega o cargo de maior hierarquia do membro e limpa o nome
             if (member.roles && member.roles.length > 0) {
                 const rolesRes = await discordFetch(`/guilds/${GUILD_ID}/roles`);
                 if (rolesRes.ok) {
@@ -218,18 +218,20 @@ app.post("/bind-hwid", async (req, res) => {
 
                     const memberRoles = allRoles
                         .filter(r => member.roles.includes(r.id))
-                        // Remove @everyone (id igual ao guild_id) e cargos sem nome util
-                        .filter(r => r.id !== GUILD_ID)
-                        // Remove cargos cujo nome comeca com emoji ou simbolo Unicode
-                        // (mantém apenas cargos cujo primeiro char é ASCII letra/numero/espaco)
-                        .filter(r => {
-                            const first = r.name.codePointAt(0);
-                            return first < 128; // ASCII puro = sem emoji
-                        })
+                        .filter(r => r.id !== GUILD_ID) // remove @everyone
                         .sort((a, b) => b.position - a.position);
 
-                    if (memberRoles.length > 0)
-                        cargo = memberRoles[0].name;
+                    if (memberRoles.length > 0) {
+                        let rawName = memberRoles[0].name;
+                        // Remove tudo antes e incluindo o primeiro "|" se existir
+                        const pipeIdx = rawName.indexOf('|');
+                        if (pipeIdx !== -1)
+                            rawName = rawName.substring(pipeIdx + 1);
+                        // Remove chars nao-ASCII (emojis) que sobraram
+                        rawName = rawName.replace(/[^\x20-\x7E]/g, '').trim();
+                        if (rawName.length > 0)
+                            cargo = rawName;
+                    }
                 }
             }
         }

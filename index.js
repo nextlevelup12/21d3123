@@ -12,7 +12,7 @@ const BOT_TOKEN  = process.env.BOT_TOKEN;
 const GUILD_ID   = process.env.GUILD_ID;
 const ROLE_ID    = process.env.ROLE_ID;
 const API_SECRET = process.env.API_SECRET;
-const ADMIN_KEY  = process.env.ADMIN_KEY; // chave para resetar HWID
+const ADMIN_KEY  = process.env.ADMIN_KEY;
 
 console.log("[STARTUP] BOT_TOKEN:",   BOT_TOKEN  ? "OK" : "FALTANDO");
 console.log("[STARTUP] GUILD_ID:",    GUILD_ID   ? GUILD_ID  : "FALTANDO");
@@ -21,9 +21,7 @@ console.log("[STARTUP] API_SECRET:",  API_SECRET ? "OK" : "FALTANDO");
 console.log("[STARTUP] ADMIN_KEY:",   ADMIN_KEY  ? "OK" : "FALTANDO (reset de HWID desativado)");
 
 // ============================================================
-// SQLITE — banco criado automaticamente em /data/cyclone.db
-// No Railway, crie um volume em /data para persistencia real
-// Se nao tiver volume, salva na raiz do projeto (OK para testes)
+// SQLITE
 // ============================================================
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "cyclone.db");
 const db = new Database(DB_PATH);
@@ -39,8 +37,7 @@ db.exec(`
 console.log("[STARTUP] SQLite OK:", DB_PATH);
 
 // ============================================================
-// CODIGOS PENDENTES (em memoria, expira em 5 min — nao precisa
-// persistir pois sao de curta duracao)
+// CODIGOS PENDENTES
 // ============================================================
 const pendingCodes = new Map();
 
@@ -88,11 +85,33 @@ function checkAdmin(req, res) {
     return true;
 }
 
+// Pega o nome de display do membro no servidor
+// Prioridade: nick do servidor > display_name global > username
+function getMemberName(member) {
+    if (member.nick) return member.nick;
+    if (member.user && member.user.global_name) return member.user.global_name;
+    if (member.user && member.user.username) return member.user.username;
+    return "Desconhecido";
+}
+
+// Busca o nome do cargo pelo ROLE_ID na lista de roles do servidor
+async function getRoleName(roleId) {
+    try {
+        const res = await discordFetch(`/guilds/${GUILD_ID}/roles`);
+        if (!res.ok) return "Membro";
+        const roles = await res.json();
+        const role = roles.find(r => r.id === roleId);
+        return role ? role.name : "Membro";
+    } catch {
+        return "Membro";
+    }
+}
+
 // ============================================================
 // ROTAS
 // ============================================================
 
-// 1) Solicitar codigo — igual ao original
+// 1) Solicitar codigo
 app.post("/request-code", async (req, res) => {
     if (!checkSecret(req, res)) return;
     const { discord_id } = req.body;
@@ -149,7 +168,7 @@ app.post("/request-code", async (req, res) => {
     }
 });
 
-// 2) Verificar codigo — igual ao original
+// 2) Verificar codigo
 app.post("/verify-code", async (req, res) => {
     if (!checkSecret(req, res)) return;
     const { discord_id, code } = req.body;
@@ -173,7 +192,7 @@ app.post("/verify-code", async (req, res) => {
     return res.json({ authorized: true, message: "Acesso liberado!" });
 });
 
-// 3) Vincular / verificar HWID — chamado pelo loader apos verify-code ok
+// 3) Vincular / verificar HWID — agora retorna username e cargo
 app.post("/bind-hwid", async (req, res) => {
     if (!checkSecret(req, res)) return;
     const { discord_id, hwid } = req.body;
@@ -182,14 +201,44 @@ app.post("/bind-hwid", async (req, res) => {
     if (!discord_id || !hwid || hwid.length < 8)
         return res.status(400).json({ allowed: false, message: "Dados invalidos." });
 
+    // Busca infos do membro no Discord para retornar nome e cargo
+    let username = "Desconhecido";
+    let cargo    = "Membro";
+    try {
+        const memberRes = await discordFetch(`/guilds/${GUILD_ID}/members/${discord_id}`);
+        if (memberRes.ok) {
+            const member = await memberRes.json();
+            username = getMemberName(member);
+
+            // Pega o nome do cargo mais alto que o membro tem
+            // (ignora @everyone que todo mundo tem)
+            if (member.roles && member.roles.length > 0) {
+                const rolesRes = await discordFetch(`/guilds/${GUILD_ID}/roles`);
+                if (rolesRes.ok) {
+                    const allRoles = await rolesRes.json();
+                    // Filtra pelos cargos que o membro tem, ordena por posicao (maior = mais importante)
+                    const memberRoles = allRoles
+                        .filter(r => member.roles.includes(r.id))
+                        .sort((a, b) => b.position - a.position);
+                    if (memberRoles.length > 0)
+                        cargo = memberRoles[0].name;
+                }
+            }
+        }
+    } catch (err) {
+        console.error("[BIND-HWID] Erro ao buscar membro Discord:", err);
+        // Continua mesmo se falhar — nao bloqueia o login
+    }
+
+    console.log(`[BIND-HWID] username: "${username}" | cargo: "${cargo}"`);
+
     const row = db.prepare("SELECT hwid FROM hwid_lock WHERE discord_id = ?").get(discord_id);
 
     if (!row) {
-        // Primeiro acesso — registra o HWID
         db.prepare("INSERT INTO hwid_lock (discord_id, hwid, created_at) VALUES (?, ?, ?)")
           .run(discord_id, hwid, Date.now());
         console.log(`[BIND-HWID] Novo vinculo: ${discord_id} -> ${hwid}`);
-        return res.json({ allowed: true, message: "HWID registrado com sucesso." });
+        return res.json({ allowed: true, message: "HWID registrado com sucesso.", username, cargo });
     }
 
     if (row.hwid !== hwid) {
@@ -198,10 +247,10 @@ app.post("/bind-hwid", async (req, res) => {
     }
 
     console.log(`[BIND-HWID] HWID ok para ${discord_id}`);
-    return res.json({ allowed: true, message: "HWID verificado." });
+    return res.json({ allowed: true, message: "HWID verificado.", username, cargo });
 });
 
-// 4) Reset de HWID — so voce acessa com ADMIN_KEY no header x-admin-key
+// 4) Reset de HWID
 app.post("/reset-hwid", (req, res) => {
     if (!checkAdmin(req, res)) return;
     const { discord_id } = req.body;
@@ -218,7 +267,7 @@ app.post("/reset-hwid", (req, res) => {
     return res.json({ success: true, message: `HWID de ${discord_id} resetado com sucesso.` });
 });
 
-// 5) Listar todos os HWIDs vinculados — so admin
+// 5) Listar todos os HWIDs vinculados
 app.get("/list-hwids", (req, res) => {
     if (!checkAdmin(req, res)) return;
     const rows = db.prepare("SELECT discord_id, hwid, created_at FROM hwid_lock ORDER BY created_at DESC").all();

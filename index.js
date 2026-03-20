@@ -8,17 +8,21 @@ app.use(express.json());
 // ============================================================
 // ENV VARS
 // ============================================================
-const BOT_TOKEN  = process.env.BOT_TOKEN;
-const GUILD_ID   = process.env.GUILD_ID;
-const ROLE_ID    = process.env.ROLE_ID;
-const API_SECRET = process.env.API_SECRET;
-const ADMIN_KEY  = process.env.ADMIN_KEY;
+const BOT_TOKEN      = process.env.BOT_TOKEN;
+const GUILD_ID       = process.env.GUILD_ID;
+const ROLE_ID        = process.env.ROLE_ID;
+const API_SECRET     = process.env.API_SECRET;
+const ADMIN_KEY      = process.env.ADMIN_KEY;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || "1464378400717148210";
+const BASE_URL       = process.env.BASE_URL || "https://21d3123-production.up.railway.app";
 
-console.log("[STARTUP] BOT_TOKEN:",   BOT_TOKEN  ? "OK" : "FALTANDO");
-console.log("[STARTUP] GUILD_ID:",    GUILD_ID   ? GUILD_ID  : "FALTANDO");
-console.log("[STARTUP] ROLE_ID:",     ROLE_ID    ? ROLE_ID   : "FALTANDO");
-console.log("[STARTUP] API_SECRET:",  API_SECRET ? "OK" : "FALTANDO");
-console.log("[STARTUP] ADMIN_KEY:",   ADMIN_KEY  ? "OK" : "FALTANDO (reset de HWID desativado)");
+console.log("[STARTUP] BOT_TOKEN:",      BOT_TOKEN      ? "OK" : "FALTANDO");
+console.log("[STARTUP] GUILD_ID:",       GUILD_ID       ? GUILD_ID  : "FALTANDO");
+console.log("[STARTUP] ROLE_ID:",        ROLE_ID        ? ROLE_ID   : "FALTANDO");
+console.log("[STARTUP] API_SECRET:",     API_SECRET     ? "OK" : "FALTANDO");
+console.log("[STARTUP] ADMIN_KEY:",      ADMIN_KEY      ? "OK" : "FALTANDO");
+console.log("[STARTUP] LOG_CHANNEL_ID:", LOG_CHANNEL_ID);
+console.log("[STARTUP] BASE_URL:",       BASE_URL);
 
 // ============================================================
 // SQLITE
@@ -52,8 +56,8 @@ function generateCode() {
 // ============================================================
 // HELPERS
 // ============================================================
-async function discordFetch(path, options = {}) {
-    const url = `https://discord.com/api/v10${path}`;
+async function discordFetch(endpoint, options = {}) {
+    const url = `https://discord.com/api/v10${endpoint}`;
     console.log(`[DISCORD] Requisitando: ${url}`);
     const res = await fetch(url, {
         ...options,
@@ -85,8 +89,6 @@ function checkAdmin(req, res) {
     return true;
 }
 
-// Pega o nome de display do membro no servidor
-// Prioridade: nick do servidor > display_name global > username
 function getMemberName(member) {
     if (member.nick) return member.nick;
     if (member.user && member.user.global_name) return member.user.global_name;
@@ -94,16 +96,47 @@ function getMemberName(member) {
     return "Desconhecido";
 }
 
-// Busca o nome do cargo pelo ROLE_ID na lista de roles do servidor
-async function getRoleName(roleId) {
+// ============================================================
+// ENVIAR LOG NO CANAL DO DISCORD
+// ============================================================
+async function sendLoginLog(discord_id, username, cargo, hwid, isNew) {
+    if (!BOT_TOKEN || !LOG_CHANNEL_ID) return;
+
+    const resetUrl = `${BASE_URL}/reset-hwid-web?id=${discord_id}&key=${encodeURIComponent(ADMIN_KEY)}&nome=${encodeURIComponent(username)}&cargo=${encodeURIComponent(cargo)}&hwid=${encodeURIComponent(hwid)}`;
+
+    const embed = {
+        title: isNew ? "🆕 Novo Registro — Loader Cyclone" : "✅ Login — Loader Cyclone",
+        color: isNew ? 0x5865F2 : 0x57F287,
+        fields: [
+            { name: "👤 Nome",  value: `\`${username}\``,    inline: true  },
+            { name: "🏷️ Cargo", value: `\`${cargo}\``,      inline: true  },
+            { name: "\u200b",   value: "\u200b",             inline: true  },
+            { name: "🆔 ID",    value: `\`${discord_id}\``,  inline: false },
+            { name: "💻 HWID",  value: `\`${hwid}\``,        inline: false },
+        ],
+        timestamp: new Date().toISOString(),
+        footer: { text: "Cyclone Store | Loader" }
+    };
+
     try {
-        const res = await discordFetch(`/guilds/${GUILD_ID}/roles`);
-        if (!res.ok) return "Membro";
-        const roles = await res.json();
-        const role = roles.find(r => r.id === roleId);
-        return role ? role.name : "Membro";
-    } catch {
-        return "Membro";
+        await discordFetch(`/channels/${LOG_CHANNEL_ID}/messages`, {
+            method: "POST",
+            body: JSON.stringify({
+                embeds: [embed],
+                components: [{
+                    type: 1,
+                    components: [{
+                        type: 2,
+                        style: 5,
+                        label: "🔄 Reset HWID",
+                        url: resetUrl
+                    }]
+                }]
+            })
+        });
+        console.log(`[LOG] Mensagem enviada para canal ${LOG_CHANNEL_ID}`);
+    } catch (err) {
+        console.error("[LOG] Erro ao enviar log:", err);
     }
 }
 
@@ -123,7 +156,6 @@ app.post("/request-code", async (req, res) => {
     try {
         const memberRes  = await discordFetch(`/guilds/${GUILD_ID}/members/${discord_id}`);
         const memberBody = await memberRes.text();
-        console.log(`[REQUEST-CODE] Resposta Discord: ${memberBody}`);
 
         if (memberRes.status === 404)
             return res.json({ success: false, message: "Voce nao esta no servidor Discord." });
@@ -172,7 +204,6 @@ app.post("/request-code", async (req, res) => {
 app.post("/verify-code", async (req, res) => {
     if (!checkSecret(req, res)) return;
     const { discord_id, code } = req.body;
-    console.log(`[VERIFY-CODE] id: "${discord_id}" | code: "${code}"`);
 
     if (!discord_id || !code)
         return res.status(400).json({ authorized: false, message: "Dados invalidos." });
@@ -188,11 +219,10 @@ app.post("/verify-code", async (req, res) => {
         return res.json({ authorized: false, message: "Codigo incorreto." });
 
     pendingCodes.delete(discord_id);
-    console.log(`[VERIFY-CODE] Acesso liberado para ${discord_id}`);
     return res.json({ authorized: true, message: "Acesso liberado!" });
 });
 
-// 3) Vincular / verificar HWID — agora retorna username e cargo
+// 3) Vincular / verificar HWID + envia log no canal
 app.post("/bind-hwid", async (req, res) => {
     if (!checkSecret(req, res)) return;
     const { discord_id, hwid } = req.body;
@@ -201,7 +231,6 @@ app.post("/bind-hwid", async (req, res) => {
     if (!discord_id || !hwid || hwid.length < 8)
         return res.status(400).json({ allowed: false, message: "Dados invalidos." });
 
-    // Busca infos do membro no Discord para retornar nome e cargo
     let username = "Desconhecido";
     let cargo    = "Membro";
     try {
@@ -210,37 +239,28 @@ app.post("/bind-hwid", async (req, res) => {
             const member = await memberRes.json();
             username = getMemberName(member);
 
-            // Pega o cargo de maior hierarquia do membro e limpa o nome
             if (member.roles && member.roles.length > 0) {
                 const rolesRes = await discordFetch(`/guilds/${GUILD_ID}/roles`);
                 if (rolesRes.ok) {
                     const allRoles = await rolesRes.json();
-
                     const memberRoles = allRoles
                         .filter(r => member.roles.includes(r.id))
-                        .filter(r => r.id !== GUILD_ID) // remove @everyone
+                        .filter(r => r.id !== GUILD_ID)
                         .sort((a, b) => b.position - a.position);
 
                     if (memberRoles.length > 0) {
                         let rawName = memberRoles[0].name;
-                        // Remove tudo antes e incluindo o primeiro "|" se existir
                         const pipeIdx = rawName.indexOf('|');
-                        if (pipeIdx !== -1)
-                            rawName = rawName.substring(pipeIdx + 1);
-                        // Remove chars nao-ASCII (emojis) que sobraram
+                        if (pipeIdx !== -1) rawName = rawName.substring(pipeIdx + 1);
                         rawName = rawName.replace(/[^\x20-\x7E]/g, '').trim();
-                        if (rawName.length > 0)
-                            cargo = rawName;
+                        if (rawName.length > 0) cargo = rawName;
                     }
                 }
             }
         }
     } catch (err) {
-        console.error("[BIND-HWID] Erro ao buscar membro Discord:", err);
-        // Continua mesmo se falhar — nao bloqueia o login
+        console.error("[BIND-HWID] Erro ao buscar membro:", err);
     }
-
-    console.log(`[BIND-HWID] username: "${username}" | cargo: "${cargo}"`);
 
     const row = db.prepare("SELECT hwid FROM hwid_lock WHERE discord_id = ?").get(discord_id);
 
@@ -248,19 +268,20 @@ app.post("/bind-hwid", async (req, res) => {
         db.prepare("INSERT INTO hwid_lock (discord_id, hwid, created_at) VALUES (?, ?, ?)")
           .run(discord_id, hwid, Date.now());
         console.log(`[BIND-HWID] Novo vinculo: ${discord_id} -> ${hwid}`);
-        return res.json({ allowed: true, message: "HWID registrado com sucesso.", username, cargo });
+        sendLoginLog(discord_id, username, cargo, hwid, true).catch(() => {});
+        return res.json({ allowed: true, message: "HWID registrado.", username, cargo });
     }
 
     if (row.hwid !== hwid) {
-        console.log(`[BIND-HWID] BLOQUEADO: ${discord_id} | esperado: ${row.hwid} | recebido: ${hwid}`);
-        return res.json({ allowed: false, message: "Acesso negado: este ID ja esta vinculado a outro PC. Contate o suporte." });
+        console.log(`[BIND-HWID] BLOQUEADO: ${discord_id}`);
+        return res.json({ allowed: false, message: "Acesso negado: ID vinculado a outro PC. Contate o suporte." });
     }
 
-    console.log(`[BIND-HWID] HWID ok para ${discord_id}`);
+    sendLoginLog(discord_id, username, cargo, hwid, false).catch(() => {});
     return res.json({ allowed: true, message: "HWID verificado.", username, cargo });
 });
 
-// 4) Reset de HWID
+// 4) Reset de HWID via POST (API direta)
 app.post("/reset-hwid", (req, res) => {
     if (!checkAdmin(req, res)) return;
     const { discord_id } = req.body;
@@ -269,26 +290,210 @@ app.post("/reset-hwid", (req, res) => {
         return res.status(400).json({ success: false, message: "discord_id obrigatorio." });
 
     const info = db.prepare("DELETE FROM hwid_lock WHERE discord_id = ?").run(discord_id);
+    if (info.changes === 0)
+        return res.json({ success: false, message: "Nenhum HWID encontrado." });
 
+    console.log(`[RESET-HWID] HWID removido para ${discord_id}`);
+    return res.json({ success: true, message: `HWID de ${discord_id} resetado.` });
+});
+
+// 5) Página web de confirmação de reset (link do botão do Discord)
+app.get("/reset-hwid-web", (req, res) => {
+    const { id, key, nome, cargo, hwid } = req.query;
+
+    if (!ADMIN_KEY || key !== ADMIN_KEY) {
+        return res.status(403).send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Negado</title>
+        <style>body{background:#161616;color:#ccc;font-family:'Segoe UI',sans-serif;display:flex;
+        align-items:center;justify-content:center;height:100vh;margin:0;}
+        .box{background:#1e1e1e;border:1px solid #2e2e2e;border-radius:12px;padding:40px;text-align:center;}
+        h2{color:#f44336;}</style></head><body>
+        <div class="box"><h2>❌ Acesso Negado</h2><p>Chave de admin inválida.</p></div></body></html>`);
+    }
+
+    const row = db.prepare("SELECT hwid FROM hwid_lock WHERE discord_id = ?").get(id);
+    const hwidAtual = row ? row.hwid : "Não registrado";
+
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Reset HWID — Cyclone Store</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #161616;
+            color: #ccc;
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .card {
+            background: #1e1e1e;
+            border: 1px solid #2e2e2e;
+            border-radius: 14px;
+            padding: 36px 40px;
+            max-width: 460px;
+            width: 100%;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        .brand {
+            font-size: 11px;
+            color: #444;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 22px;
+        }
+        h2 { font-size: 20px; color: #e0e0e0; margin-bottom: 4px; }
+        .sub { font-size: 13px; color: #555; margin-bottom: 26px; }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            padding: 10px 0;
+            border-bottom: 1px solid #252525;
+            font-size: 14px;
+            gap: 12px;
+        }
+        .info-row:last-of-type { border-bottom: none; margin-bottom: 0; }
+        .lbl { color: #555; white-space: nowrap; }
+        .val { color: #ddd; word-break: break-all; text-align: right; }
+        .val.mono { font-family: 'Courier New', monospace; font-size: 12px; color: #999; }
+        .warn {
+            background: #1f1818;
+            border: 1px solid #3a2020;
+            border-radius: 8px;
+            padding: 13px 15px;
+            font-size: 13px;
+            color: #d88;
+            margin: 22px 0 20px;
+            line-height: 1.5;
+        }
+        .btns { display: flex; gap: 10px; }
+        .btn {
+            flex: 1; padding: 12px; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: opacity .15s; text-align: center;
+        }
+        .btn:hover { opacity: 0.82; }
+        .btn:disabled { opacity: 0.5; cursor: default; }
+        .cancel { background: #252525; color: #888; border: 1px solid #303030; }
+        .confirm { background: #c0392b; color: #fff; }
+        .result { display: none; text-align: center; padding: 16px 0 4px; }
+        .result.show { display: block; }
+        .r-icon { font-size: 44px; margin-bottom: 14px; }
+        .r-msg { font-size: 17px; color: #e0e0e0; margin-bottom: 6px; }
+        .r-sub { font-size: 13px; color: #555; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="brand">Cyclone Store &middot; Painel Admin</div>
+
+    <div id="content">
+        <h2>🔄 Reset de HWID</h2>
+        <p class="sub">Revise os dados antes de confirmar.</p>
+
+        <div class="info-row">
+            <span class="lbl">Nome</span>
+            <span class="val">${nome || "—"}</span>
+        </div>
+        <div class="info-row">
+            <span class="lbl">Cargo</span>
+            <span class="val">${cargo || "—"}</span>
+        </div>
+        <div class="info-row">
+            <span class="lbl">Discord ID</span>
+            <span class="val mono">${id || "—"}</span>
+        </div>
+        <div class="info-row">
+            <span class="lbl">HWID atual</span>
+            <span class="val mono">${hwidAtual}</span>
+        </div>
+
+        <div class="warn">
+            ⚠️ Ao confirmar, o HWID será removido do banco. O usuário poderá fazer login de um PC diferente na próxima vez.
+        </div>
+
+        <div class="btns">
+            <button class="btn cancel" onclick="window.close()">Cancelar</button>
+            <button class="btn confirm" id="btnConfirm" onclick="doReset()">Confirmar Reset</button>
+        </div>
+    </div>
+
+    <div class="result" id="result">
+        <div class="r-icon" id="rIcon"></div>
+        <div class="r-msg"  id="rMsg"></div>
+        <div class="r-sub"  id="rSub"></div>
+    </div>
+</div>
+
+<script>
+async function doReset() {
+    const btn = document.getElementById('btnConfirm');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
+    try {
+        const r = await fetch('/reset-hwid-confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: '${id}', key: '${key}' })
+        });
+        const d = await r.json();
+        document.getElementById('content').style.display = 'none';
+        const res = document.getElementById('result');
+        res.classList.add('show');
+        if (d.success) {
+            document.getElementById('rIcon').textContent = '✅';
+            document.getElementById('rMsg').textContent  = 'HWID resetado com sucesso!';
+            document.getElementById('rSub').textContent  = 'O usuário poderá logar de um novo PC agora.';
+        } else {
+            document.getElementById('rIcon').textContent = '❌';
+            document.getElementById('rMsg').textContent  = 'Erro ao resetar.';
+            document.getElementById('rSub').textContent  = d.message || '';
+        }
+    } catch(e) {
+        btn.disabled = false;
+        btn.textContent = 'Confirmar Reset';
+        alert('Erro de conexão. Tente novamente.');
+    }
+}
+</script>
+</body>
+</html>`);
+});
+
+// 6) Processa o reset via fetch da página web
+app.post("/reset-hwid-confirm", (req, res) => {
+    const { id, key } = req.body;
+
+    if (!ADMIN_KEY || key !== ADMIN_KEY)
+        return res.status(403).json({ success: false, message: "Chave inválida." });
+    if (!id)
+        return res.status(400).json({ success: false, message: "ID obrigatorio." });
+
+    const info = db.prepare("DELETE FROM hwid_lock WHERE discord_id = ?").run(id);
     if (info.changes === 0)
         return res.json({ success: false, message: "Nenhum HWID encontrado para esse ID." });
 
-    console.log(`[RESET-HWID] HWID removido para ${discord_id}`);
-    return res.json({ success: true, message: `HWID de ${discord_id} resetado com sucesso.` });
+    console.log(`[RESET-HWID-WEB] HWID removido para ${id}`);
+    return res.json({ success: true });
 });
 
-// 5) Listar todos os HWIDs vinculados
+// 7) Listar todos os HWIDs
 app.get("/list-hwids", (req, res) => {
     if (!checkAdmin(req, res)) return;
     const rows = db.prepare("SELECT discord_id, hwid, created_at FROM hwid_lock ORDER BY created_at DESC").all();
     return res.json({ success: true, count: rows.length, data: rows });
 });
 
-// 6) Health check
+// 8) Health check
 app.get("/health", (req, res) => res.json({
     status: "ok",
     guild_id: GUILD_ID,
     role_id: ROLE_ID,
+    log_channel_id: LOG_CHANNEL_ID,
     bot_token_set: !!BOT_TOKEN,
     api_secret_set: !!API_SECRET,
     admin_key_set: !!ADMIN_KEY,

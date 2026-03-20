@@ -297,6 +297,363 @@ app.post("/reset-hwid", (req, res) => {
     return res.json({ success: true, message: `HWID de ${discord_id} resetado.` });
 });
 
+// 4.5) Painel admin — busca por ID e reseta HWID
+app.get("/admin", (req, res) => {
+    const { key } = req.query;
+    if (!ADMIN_KEY || key !== ADMIN_KEY)
+        return res.status(403).send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Negado</title>
+        <style>body{background:#161616;color:#ccc;font-family:'Segoe UI',sans-serif;display:flex;
+        align-items:center;justify-content:center;height:100vh;margin:0;}
+        .box{background:#1e1e1e;border:1px solid #2e2e2e;border-radius:12px;padding:40px;text-align:center;}
+        h2{color:#f44336;}</style></head><body>
+        <div class="box"><h2>❌ Acesso Negado</h2><p>Chave de admin inválida.</p></div></body></html>`);
+
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Admin — Cyclone Store</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #161616;
+            color: #ccc;
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .card {
+            background: #1e1e1e;
+            border: 1px solid #2e2e2e;
+            border-radius: 14px;
+            padding: 36px 40px;
+            width: 100%;
+            max-width: 480px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        .brand { font-size: 11px; color: #444; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 22px; }
+        h2 { font-size: 20px; color: #e0e0e0; margin-bottom: 4px; }
+        .sub { font-size: 13px; color: #555; margin-bottom: 26px; }
+
+        /* Input busca */
+        .search-row { display: flex; gap: 10px; margin-bottom: 24px; }
+        .input-id {
+            flex: 1;
+            background: #252525;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 11px 14px;
+            color: #ddd;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            outline: none;
+            transition: border-color .2s;
+        }
+        .input-id:focus { border-color: #555; }
+        .input-id::placeholder { color: #444; font-family: 'Segoe UI', sans-serif; }
+        .btn-buscar {
+            background: #2a2a2a;
+            border: 1px solid #383838;
+            border-radius: 8px;
+            padding: 11px 18px;
+            color: #aaa;
+            font-size: 14px;
+            cursor: pointer;
+            transition: opacity .15s;
+            white-space: nowrap;
+        }
+        .btn-buscar:hover { opacity: 0.8; }
+
+        /* Card resultado */
+        .result-card {
+            display: none;
+            background: #242424;
+            border: 1px solid #2e2e2e;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+        .result-card.show { display: block; }
+        .rc-header {
+            background: #1a1a1a;
+            padding: 12px 16px;
+            font-size: 12px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        .rc-body { padding: 4px 0; }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 9px 16px;
+            border-bottom: 1px solid #292929;
+            font-size: 14px;
+            gap: 12px;
+        }
+        .info-row:last-child { border-bottom: none; }
+        .lbl { color: #555; white-space: nowrap; }
+        .val { color: #ddd; word-break: break-all; text-align: right; }
+        .val.mono { font-family: 'Courier New', monospace; font-size: 12px; color: #999; }
+        .no-hwid { color: #c0392b; }
+
+        /* Confirmação */
+        .confirm-area {
+            display: none;
+            background: #1f1818;
+            border: 1px solid #3a2020;
+            border-radius: 8px;
+            padding: 14px 16px;
+            font-size: 13px;
+            color: #d88;
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+        .confirm-area.show { display: block; }
+
+        /* Botões */
+        .btns { display: none; gap: 10px; }
+        .btns.show { display: flex; }
+        .btn {
+            flex: 1; padding: 12px; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: opacity .15s;
+        }
+        .btn:hover { opacity: 0.82; }
+        .btn:disabled { opacity: 0.5; cursor: default; }
+        .cancel { background: #252525; color: #888; border: 1px solid #303030; }
+        .confirm { background: #c0392b; color: #fff; }
+
+        /* Resultado final */
+        .final { display: none; text-align: center; padding: 10px 0 4px; }
+        .final.show { display: block; }
+        .f-icon { font-size: 42px; margin-bottom: 12px; }
+        .f-msg { font-size: 16px; color: #e0e0e0; margin-bottom: 6px; }
+        .f-sub { font-size: 13px; color: #555; margin-bottom: 20px; }
+        .btn-novo {
+            background: #252525; border: 1px solid #333; border-radius: 8px;
+            padding: 10px 20px; color: #aaa; font-size: 13px; cursor: pointer;
+        }
+        .btn-novo:hover { opacity: 0.8; }
+
+        .error-msg { color: #c0392b; font-size: 13px; margin-bottom: 16px; display: none; }
+        .error-msg.show { display: block; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="brand">Cyclone Store &middot; Painel Admin</div>
+
+    <div id="main">
+        <h2>🔄 Reset de HWID</h2>
+        <p class="sub">Digite o Discord ID do usuário para buscar e resetar.</p>
+
+        <div class="search-row">
+            <input class="input-id" id="inputId" type="text"
+                placeholder="Discord ID (ex: 770009785583665172)"
+                maxlength="20" oninput="this.value=this.value.replace(/[^0-9]/g,'')">
+            <button class="btn-buscar" onclick="buscar()">Buscar</button>
+        </div>
+
+        <div class="error-msg" id="errMsg"></div>
+
+        <div class="result-card" id="resultCard">
+            <div class="rc-header">Dados encontrados</div>
+            <div class="rc-body">
+                <div class="info-row"><span class="lbl">Nome</span>  <span class="val" id="rNome">—</span></div>
+                <div class="info-row"><span class="lbl">Cargo</span> <span class="val" id="rCargo">—</span></div>
+                <div class="info-row"><span class="lbl">ID</span>    <span class="val mono" id="rId">—</span></div>
+                <div class="info-row"><span class="lbl">HWID</span>  <span class="val mono" id="rHwid">—</span></div>
+            </div>
+        </div>
+
+        <div class="confirm-area" id="confirmArea">
+            ⚠️ Tem certeza que deseja resetar o HWID desta pessoa?<br>
+            O usuário poderá logar de um PC diferente na próxima vez.
+        </div>
+
+        <div class="btns" id="btns">
+            <button class="btn cancel" onclick="cancelar()">Cancelar</button>
+            <button class="btn confirm" id="btnConfirm" onclick="confirmar()">Confirmar Reset</button>
+        </div>
+    </div>
+
+    <div class="final" id="final">
+        <div class="f-icon" id="fIcon"></div>
+        <div class="f-msg"  id="fMsg"></div>
+        <div class="f-sub"  id="fSub"></div>
+        <button class="btn-novo" onclick="resetarTela()">Fazer outro reset</button>
+    </div>
+</div>
+
+<script>
+const ADMIN_KEY = '${key}';
+let idAtual = '';
+
+async function buscar() {
+    const id = document.getElementById('inputId').value.trim();
+    if (!id || id.length < 17) return mostrarErro('ID inválido. Deve ter entre 17 e 20 dígitos.');
+
+    esconderErro();
+    document.getElementById('resultCard').classList.remove('show');
+    document.getElementById('confirmArea').classList.remove('show');
+    document.getElementById('btns').classList.remove('show');
+
+    try {
+        const r = await fetch('/admin-buscar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, key: ADMIN_KEY })
+        });
+        const d = await r.json();
+
+        if (!d.success) return mostrarErro(d.message || 'Usuário não encontrado.');
+
+        idAtual = id;
+        document.getElementById('rNome').textContent  = d.username || '—';
+        document.getElementById('rCargo').textContent = d.cargo    || '—';
+        document.getElementById('rId').textContent    = id;
+
+        const hwidEl = document.getElementById('rHwid');
+        if (d.hwid) {
+            hwidEl.textContent = d.hwid;
+            hwidEl.classList.remove('no-hwid');
+            document.getElementById('confirmArea').classList.add('show');
+            document.getElementById('btns').classList.add('show');
+        } else {
+            hwidEl.textContent = 'Sem HWID vinculado';
+            hwidEl.classList.add('no-hwid');
+        }
+
+        document.getElementById('resultCard').classList.add('show');
+    } catch(e) {
+        mostrarErro('Erro de conexão. Tente novamente.');
+    }
+}
+
+function cancelar() {
+    document.getElementById('resultCard').classList.remove('show');
+    document.getElementById('confirmArea').classList.remove('show');
+    document.getElementById('btns').classList.remove('show');
+    document.getElementById('inputId').value = '';
+    idAtual = '';
+}
+
+async function confirmar() {
+    const btn = document.getElementById('btnConfirm');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
+
+    try {
+        const r = await fetch('/reset-hwid-confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: idAtual, key: ADMIN_KEY })
+        });
+        const d = await r.json();
+
+        document.getElementById('main').style.display = 'none';
+        const final = document.getElementById('final');
+        final.classList.add('show');
+
+        if (d.success) {
+            document.getElementById('fIcon').textContent = '✅';
+            document.getElementById('fMsg').textContent  = 'HWID resetado com sucesso!';
+            document.getElementById('fSub').textContent  = 'O usuário poderá logar de um PC diferente agora.';
+        } else {
+            document.getElementById('fIcon').textContent = '❌';
+            document.getElementById('fMsg').textContent  = 'Erro ao resetar.';
+            document.getElementById('fSub').textContent  = d.message || '';
+        }
+    } catch(e) {
+        btn.disabled = false;
+        btn.textContent = 'Confirmar Reset';
+        mostrarErro('Erro de conexão. Tente novamente.');
+    }
+}
+
+function resetarTela() {
+    document.getElementById('main').style.display = 'block';
+    document.getElementById('final').classList.remove('show');
+    cancelar();
+    esconderErro();
+    document.getElementById('btnConfirm').disabled = false;
+    document.getElementById('btnConfirm').textContent = 'Confirmar Reset';
+}
+
+function mostrarErro(msg) {
+    const el = document.getElementById('errMsg');
+    el.textContent = msg;
+    el.classList.add('show');
+}
+function esconderErro() {
+    document.getElementById('errMsg').classList.remove('show');
+}
+
+document.getElementById('inputId').addEventListener('keydown', e => {
+    if (e.key === 'Enter') buscar();
+});
+</script>
+</body>
+</html>`);
+});
+
+// 4.6) Busca dados do usuário pelo ID para o painel admin
+app.post("/admin-buscar", async (req, res) => {
+    const { id, key } = req.body;
+    if (!ADMIN_KEY || key !== ADMIN_KEY)
+        return res.status(403).json({ success: false, message: "Chave inválida." });
+    if (!id)
+        return res.status(400).json({ success: false, message: "ID obrigatorio." });
+
+    // Busca HWID no banco
+    const row = db.prepare("SELECT hwid FROM hwid_lock WHERE discord_id = ?").get(id);
+
+    // Busca nome e cargo no Discord
+    let username = "Desconhecido";
+    let cargo    = "Membro";
+    try {
+        const memberRes = await discordFetch(`/guilds/${GUILD_ID}/members/${id}`);
+        if (memberRes.ok) {
+            const member = await memberRes.json();
+            username = getMemberName(member);
+
+            if (member.roles && member.roles.length > 0) {
+                const rolesRes = await discordFetch(`/guilds/${GUILD_ID}/roles`);
+                if (rolesRes.ok) {
+                    const allRoles = await rolesRes.json();
+                    const memberRoles = allRoles
+                        .filter(r => member.roles.includes(r.id))
+                        .filter(r => r.id !== GUILD_ID)
+                        .sort((a, b) => b.position - a.position);
+                    if (memberRoles.length > 0) {
+                        let rawName = memberRoles[0].name;
+                        const pipeIdx = rawName.indexOf('|');
+                        if (pipeIdx !== -1) rawName = rawName.substring(pipeIdx + 1);
+                        rawName = rawName.replace(/[^\x20-\x7E]/g, '').trim();
+                        if (rawName.length > 0) cargo = rawName;
+                    }
+                }
+            }
+        } else if (memberRes.status === 404) {
+            return res.json({ success: false, message: "Usuário não encontrado no servidor Discord." });
+        }
+    } catch (err) {
+        console.error("[ADMIN-BUSCAR] Erro:", err);
+    }
+
+    return res.json({
+        success: true,
+        username,
+        cargo,
+        hwid: row ? row.hwid : null
+    });
+});
+
 // 5) Página web de confirmação de reset (link do botão do Discord)
 app.get("/reset-hwid-web", (req, res) => {
     const { id, key, nome, cargo, hwid } = req.query;

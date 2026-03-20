@@ -15,6 +15,7 @@ const API_SECRET      = process.env.API_SECRET;
 const ADMIN_KEY       = process.env.ADMIN_KEY;
 const LOG_CHANNEL_ID  = process.env.LOG_CHANNEL_ID;
 const LINK_CHANNEL_ID = process.env.LINK_CHANNEL_ID;
+const ID_ALLOWED      = process.env.ID_ALLOWED; // Discord ID autorizado a acessar o painel
 const BASE_URL        = process.env.BASE_URL || "https://21d3123-production.up.railway.app";
 
 console.log("[STARTUP] BOT_TOKEN:",       BOT_TOKEN       ? "OK" : "FALTANDO");
@@ -22,6 +23,7 @@ console.log("[STARTUP] GUILD_ID:",        GUILD_ID        ? GUILD_ID  : "FALTAND
 console.log("[STARTUP] ROLE_ID:",         ROLE_ID         ? ROLE_ID   : "FALTANDO");
 console.log("[STARTUP] API_SECRET:",      API_SECRET      ? "OK" : "FALTANDO");
 console.log("[STARTUP] ADMIN_KEY:",       ADMIN_KEY       ? "OK" : "FALTANDO");
+console.log("[STARTUP] ID_ALLOWED:",      ID_ALLOWED      ? "OK" : "NAO DEFINIDO");
 console.log("[STARTUP] LOG_CHANNEL_ID:",  LOG_CHANNEL_ID  || "NAO DEFINIDO");
 console.log("[STARTUP] LINK_CHANNEL_ID:", LINK_CHANNEL_ID || "NAO DEFINIDO");
 console.log("[STARTUP] BASE_URL:",        BASE_URL);
@@ -919,7 +921,7 @@ app.post("/send-admin-embed", (req, res) => {
         .catch(err => res.status(500).json({ success: false, message: err.message }));
 });
 
-// 11) Página de login do painel admin (sem key na URL)
+// 11) Página de login do painel admin — ID + chave
 app.get("/admin-login", (req, res) => {
     res.send(`<!DOCTYPE html>
 <html>
@@ -928,182 +930,163 @@ app.get("/admin-login", (req, res) => {
     <title>Login — Cyclone Store Admin</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            background: #161616;
-            color: #ccc;
-            font-family: 'Segoe UI', sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
+        body { background: #161616; color: #ccc; font-family: 'Segoe UI', sans-serif;
+               display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        .card { background: #1e1e1e; border: 1px solid #2e2e2e; border-radius: 14px;
+                padding: 40px; width: 100%; max-width: 380px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.5); text-align: center; }
+        .icon-wrap { width: 52px; height: 52px; border-radius: 50%; background: #252525;
+                     border: 1px solid #333; display: flex; align-items: center;
+                     justify-content: center; margin: 0 auto 18px; }
+        .brand { font-size: 11px; color: #444; text-transform: uppercase;
+                 letter-spacing: 2px; margin-bottom: 6px; }
+        h2 { font-size: 20px; color: #e0e0e0; margin-bottom: 4px; }
+        .sub { font-size: 13px; color: #555; margin-bottom: 26px; }
+        .field { margin-bottom: 10px; text-align: left; }
+        .field label { display: block; font-size: 11px; color: #555; margin-bottom: 5px;
+                       letter-spacing: 0.8px; text-transform: uppercase; }
+        .input-wrap { position: relative; }
+        .input-wrap input {
+            width: 100%; background: #252525; border: 1px solid #333; border-radius: 8px;
+            padding: 11px 40px 11px 13px; color: #ddd; font-size: 14px; outline: none;
+            transition: border-color .2s; font-family: 'Courier New', monospace; letter-spacing: 1px;
         }
-        .card {
-            background: #1e1e1e;
-            border: 1px solid #2e2e2e;
-            border-radius: 14px;
-            padding: 40px;
-            width: 100%;
-            max-width: 380px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-            text-align: center;
-        }
-        .icon {
-            font-size: 36px;
-            margin-bottom: 16px;
-        }
-        .brand {
-            font-size: 11px;
-            color: #444;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            margin-bottom: 8px;
-        }
-        h2 {
-            font-size: 20px;
-            color: #e0e0e0;
-            margin-bottom: 6px;
-        }
-        .sub {
-            font-size: 13px;
-            color: #555;
-            margin-bottom: 28px;
-        }
-        .input-wrap {
-            position: relative;
-            margin-bottom: 12px;
-        }
-        .input-key {
-            width: 100%;
-            background: #252525;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 12px 44px 12px 14px;
-            color: #ddd;
-            font-size: 14px;
-            font-family: 'Courier New', monospace;
-            outline: none;
-            transition: border-color .2s;
-            letter-spacing: 1px;
-        }
-        .input-key:focus { border-color: #555; }
-        .input-key::placeholder {
-            color: #444;
-            font-family: 'Segoe UI', sans-serif;
-            letter-spacing: 0;
-        }
-        .toggle-eye {
-            position: absolute;
-            right: 12px;
-            top: 50%;
-            transform: translateY(-50%);
-            background: none;
-            border: none;
-            color: #555;
-            cursor: pointer;
-            font-size: 16px;
-            padding: 0;
-            line-height: 1;
-        }
-        .toggle-eye:hover { color: #888; }
-        .btn-login {
-            width: 100%;
-            background: #2a2a2a;
-            border: 1px solid #383838;
-            border-radius: 8px;
-            padding: 12px;
-            color: #aaa;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all .15s;
-            margin-bottom: 12px;
-        }
+        .input-wrap input:focus { border-color: #555; }
+        .input-wrap input::placeholder { color: #3a3a3a; font-family: 'Segoe UI', sans-serif; letter-spacing: 0; }
+        .eye-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+                   background: none; border: none; cursor: pointer; color: #555;
+                   padding: 0; font-size: 14px; line-height: 1; }
+        .eye-btn:hover { color: #888; }
+        .divider { border: none; border-top: 1px solid #252525; margin: 14px 0; }
+        .err { font-size: 12px; color: #e88; background: #1f1818; border: 1px solid #3a2020;
+               border-radius: 6px; padding: 8px 12px; margin-bottom: 12px;
+               display: none; text-align: left; }
+        .err.show { display: block; }
+        .btn-login { width: 100%; background: #2a2a2a; border: 1px solid #383838;
+                     border-radius: 8px; padding: 12px; color: #aaa; font-size: 14px;
+                     font-weight: 600; cursor: pointer; transition: all .15s; }
         .btn-login:hover { background: #303030; color: #ccc; border-color: #444; }
         .btn-login:disabled { opacity: 0.5; cursor: default; }
-        .err {
-            font-size: 13px;
-            color: #c0392b;
-            display: none;
-            margin-top: 4px;
-        }
-        .err.show { display: block; }
-        .footer-txt {
-            font-size: 12px;
-            color: #383838;
-            margin-top: 24px;
-        }
+        .success { display: none; text-align: center; padding: 8px 0; }
+        .success.show { display: block; }
+        .s-msg { font-size: 15px; color: #8bc34a; font-weight: 500; margin-bottom: 4px; }
+        .s-sub { font-size: 12px; color: #555; }
+        .footer-txt { font-size: 11px; color: #333; margin-top: 22px; }
     </style>
 </head>
 <body>
 <div class="card">
-    <div class="icon">🛡️</div>
+    <div class="icon-wrap">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="1.5">
+            <rect x="3" y="11" width="18" height="11" rx="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+    </div>
     <div class="brand">Cyclone Store</div>
-    <h2>Painel Admin</h2>
-    <p class="sub">Digite a chave de acesso para continuar.</p>
+    <h2>Painel admin</h2>
+    <p class="sub">Preencha os dois campos para acessar.</p>
 
-    <div class="input-wrap">
-        <input class="input-key" id="keyInput" type="password"
-               placeholder="Chave de acesso">
-        <button class="toggle-eye" onclick="toggleVer()" id="eyeBtn">👁</button>
+    <div id="formArea">
+        <div class="field">
+            <label>Discord ID</label>
+            <div class="input-wrap">
+                <input id="inputId" type="text" placeholder="Seu Discord ID"
+                    maxlength="20" oninput="this.value=this.value.replace(/[^0-9]/g,'')">
+            </div>
+        </div>
+
+        <hr class="divider">
+
+        <div class="field">
+            <label>Chave de acesso</label>
+            <div class="input-wrap">
+                <input id="inputKey" type="password" placeholder="Chave secreta">
+                <button class="eye-btn" onclick="toggleVer()" type="button">&#128065;</button>
+            </div>
+        </div>
+
+        <div class="err" id="errMsg"></div>
+
+        <button class="btn-login" id="btnLogin" onclick="logar()">Entrar</button>
     </div>
 
-    <button class="btn-login" id="btnLogin" onclick="logar()">Entrar</button>
-    <div class="err" id="errMsg">Chave incorreta. Tente novamente.</div>
+    <div class="success" id="successArea">
+        <div class="s-msg">&#10003; Acesso concedido!</div>
+        <div class="s-sub">Redirecionando para o painel...</div>
+    </div>
 
-    <div class="footer-txt">Cyclone Store · Loader Admin Panel</div>
+    <div class="footer-txt">Cyclone Store &middot; Loader Admin Panel</div>
 </div>
-
 <script>
 function toggleVer() {
-    const input = document.getElementById('keyInput');
-    input.type = input.type === 'password' ? 'text' : 'password';
+    const i = document.getElementById('inputKey');
+    i.type = i.type === 'password' ? 'text' : 'password';
 }
-
 async function logar() {
-    const key = document.getElementById('keyInput').value.trim();
-    if (!key) return;
-
-    const btn = document.getElementById('btnLogin');
+    const discord_id = document.getElementById('inputId').value.trim();
+    const key        = document.getElementById('inputKey').value.trim();
+    const err        = document.getElementById('errMsg');
+    const btn        = document.getElementById('btnLogin');
+    err.classList.remove('show');
+    if (!discord_id || discord_id.length < 17) {
+        err.textContent = 'Discord ID invalido.';
+        return err.classList.add('show');
+    }
+    if (!key) {
+        err.textContent = 'Preencha a chave de acesso.';
+        return err.classList.add('show');
+    }
     btn.disabled = true;
     btn.textContent = 'Verificando...';
-    document.getElementById('errMsg').classList.remove('show');
-
     try {
         const r = await fetch('/admin-login-check', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key })
+            body: JSON.stringify({ discord_id, key })
         });
         const d = await r.json();
-
         if (d.success) {
-            window.location.href = '/admin?key=' + encodeURIComponent(key);
+            document.getElementById('formArea').style.display = 'none';
+            document.getElementById('successArea').classList.add('show');
+            setTimeout(() => { window.location.href = '/admin?key=' + encodeURIComponent(key); }, 1200);
         } else {
-            document.getElementById('errMsg').classList.add('show');
+            err.textContent = d.message || 'Acesso negado.';
+            err.classList.add('show');
             btn.disabled = false;
             btn.textContent = 'Entrar';
         }
     } catch(e) {
-        document.getElementById('errMsg').textContent = 'Erro de conexão.';
-        document.getElementById('errMsg').classList.add('show');
+        err.textContent = 'Erro de conexao. Tente novamente.';
+        err.classList.add('show');
         btn.disabled = false;
         btn.textContent = 'Entrar';
     }
 }
-
-document.getElementById('keyInput').addEventListener('keydown', e => {
-    if (e.key === 'Enter') logar();
+['inputId','inputKey'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => { if(e.key==='Enter') logar(); });
 });
 </script>
 </body>
 </html>`);
 });
+});
 
-// 12) Verifica a chave de login (sem expor a key no front)
+// 12) Verifica ID + chave de login
 app.post("/admin-login-check", (req, res) => {
-    const { key } = req.body;
+    const { discord_id, key } = req.body;
+
+    // Verifica chave
     if (!ADMIN_KEY || key !== ADMIN_KEY)
-        return res.json({ success: false });
+        return res.json({ success: false, field: "key", message: "Chave de acesso incorreta." });
+
+    // Verifica ID se ID_ALLOWED estiver definido
+    if (ID_ALLOWED) {
+        // Suporta multiplos IDs separados por virgula: "123,456,789"
+        const allowedList = ID_ALLOWED.split(",").map(s => s.trim());
+        if (!allowedList.includes(discord_id))
+            return res.json({ success: false, field: "id", message: "ID do Discord nao autorizado." });
+    }
+
     return res.json({ success: true });
 });
 

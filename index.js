@@ -474,25 +474,74 @@ app.post("/reset-hwid-confirm", (req, res) => {
 });
 
 // 7) Ban de ID
-app.post("/ban-id", (req, res) => {
+app.post("/ban-id", async (req, res) => {
     if (!checkAdmin(req, res)) return;
     const { discord_id, reason } = req.body;
     if (!discord_id)
         return res.status(400).json({ success: false, message: "discord_id obrigatorio." });
 
     banId(discord_id, reason);
+
+    // Busca infos e manda log no canal
+    const { username, cargo } = await getMemberInfo(discord_id).catch(() => ({ username: "Desconhecido", cargo: "Membro" }));
+    const row = db.prepare("SELECT hwid FROM hwid_lock WHERE discord_id = ?").get(discord_id);
+    sendBlockLog(discord_id, username, row?.hwid || "N/A", `Banido pelo admin${reason ? ': ' + reason : ''}`, 0).catch(() => {});
+
     return res.json({ success: true, message: `ID ${discord_id} banido.` });
 });
 
 // 8) Unban de ID
-app.post("/unban-id", (req, res) => {
+app.post("/unban-id", async (req, res) => {
     if (!checkAdmin(req, res)) return;
     const { discord_id } = req.body;
     if (!discord_id)
         return res.status(400).json({ success: false, message: "discord_id obrigatorio." });
 
     unbanId(discord_id);
+
+    // Log de desban no canal
+    const { username, cargo } = await getMemberInfo(discord_id).catch(() => ({ username: "Desconhecido", cargo: "Membro" }));
+    if (BOT_TOKEN && LOG_CHANNEL_ID) {
+        discordFetch(`/channels/${LOG_CHANNEL_ID}/messages`, {
+            method: "POST",
+            body: JSON.stringify({
+                embeds: [{
+                    title: "✅ Conta Desbanida — Loader Cyclone",
+                    color: 0x57F287,
+                    fields: [
+                        { name: "👤 Nome",  value: `\`${username}\``,   inline: true },
+                        { name: "🏷️ Cargo", value: `\`${cargo}\``,     inline: true },
+                        { name: "🆔 ID",    value: `\`${discord_id}\``, inline: false },
+                    ],
+                    timestamp: new Date().toISOString(),
+                    footer: { text: "Cyclone Store | Loader" }
+                }]
+            })
+        }).catch(() => {});
+    }
+
     return res.json({ success: true, message: `ID ${discord_id} desbanido.` });
+});
+
+// 8.5) Check de status — loader consulta periodicamente se ainda tem acesso
+app.post("/check-status", (req, res) => {
+    if (!checkSecret(req, res)) return;
+    const { discord_id, hwid } = req.body;
+    if (!discord_id || !hwid)
+        return res.status(400).json({ active: false, message: "Dados invalidos." });
+
+    // Verifica ban
+    if (isIdBanned(discord_id))
+        return res.json({ active: false, reason: "banned", message: "Sua conta foi banida. Contate o suporte." });
+
+    // Verifica se HWID ainda está vinculado
+    const row = db.prepare("SELECT hwid FROM hwid_lock WHERE discord_id = ?").get(discord_id);
+    if (!row)
+        return res.json({ active: false, reason: "hwid_reset", message: "HWID foi resetado. Faca login novamente." });
+    if (row.hwid !== hwid)
+        return res.json({ active: false, reason: "hwid_mismatch", message: "PC nao autorizado. Faca login novamente." });
+
+    return res.json({ active: true });
 });
 
 // 9) Tirar castigo de HWID

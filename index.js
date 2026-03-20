@@ -1124,6 +1124,133 @@ document.getElementById('inputId').addEventListener('keydown', e => { if(e.key==
 }
 
 // ============================================================
+// ROTA: REPORT DE DETECCAO DE CHEAT (loader chama isso automaticamente)
+// ============================================================
+app.post("/report-cheat", async (req, res) => {
+    if (!checkSecret(req, res)) return;
+    const { discord_id, hwid, reason } = req.body;
+    if (!discord_id || !hwid)
+        return res.status(400).json({ success: false });
+
+    console.log(`[CHEAT] Deteccao: ${discord_id} | ${reason}`);
+
+    // Bane o ID automaticamente
+    banId(discord_id, `Auto-ban: ${reason}`);
+
+    // Coloca HWID em castigo permanente (until = ano 2099)
+    const until = 4102444800000;
+    db.prepare("INSERT OR REPLACE INTO hwid_penalty (hwid, until, attempts) VALUES (?, ?, ?)")
+      .run(hwid, until, 999);
+
+    // Busca infos e manda log no canal
+    const { username, cargo } = await getMemberInfo(discord_id).catch(() => ({ username: "Desconhecido", cargo: "Membro" }));
+
+    if (BOT_TOKEN && LOG_CHANNEL_ID) {
+        const embed = {
+            title: "🔴 Detecção de Cheat — Auto-Ban",
+            color: 0xFF0000,
+            fields: [
+                { name: "👤 Nome",    value: `\`${username}\``,    inline: true  },
+                { name: "🏷️ Cargo",  value: `\`${cargo}\``,       inline: true  },
+                { name: "\u200b",     value: "\u200b",             inline: true  },
+                { name: "🆔 ID",      value: `\`${discord_id}\``,  inline: false },
+                { name: "💻 HWID",    value: `\`${hwid}\``,        inline: false },
+                { name: "⚠️ Motivo", value: `\`${reason}\``,      inline: false },
+            ],
+            timestamp: new Date().toISOString(),
+            footer: { text: "Cyclone Store | Anti-Cheat" }
+        };
+        discordFetch(`/channels/${LOG_CHANNEL_ID}/messages`, {
+            method: "POST",
+            body: JSON.stringify({ embeds: [embed] })
+        }).catch(() => {});
+    }
+
+    return res.json({ success: true });
+});
+
+// ============================================================
+// BOT ONLINE VIA DISCORD GATEWAY (WebSocket)
+// ============================================================
+const https = require("https");
+const WebSocket = require("ws");
+
+let gatewayWs = null;
+let heartbeatInterval = null;
+let gatewaySequence = null;
+let reconnectTimer = null;
+
+function connectGateway() {
+    if (gatewayWs) {
+        try { gatewayWs.terminate(); } catch (_) {}
+    }
+    if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+
+    console.log("[GATEWAY] Conectando ao Discord...");
+    gatewayWs = new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
+
+    gatewayWs.on("open", () => {
+        console.log("[GATEWAY] Conectado ao WebSocket do Discord");
+    });
+
+    gatewayWs.on("message", (data) => {
+        const payload = JSON.parse(data);
+        const { op, d, s } = payload;
+
+        if (s) gatewaySequence = s;
+
+        if (op === 10) {
+            // Hello — inicia heartbeat
+            const interval = d.heartbeat_interval;
+            heartbeatInterval = setInterval(() => {
+                if (gatewayWs && gatewayWs.readyState === WebSocket.OPEN) {
+                    gatewayWs.send(JSON.stringify({ op: 1, d: gatewaySequence }));
+                }
+            }, interval);
+
+            // Identify
+            gatewayWs.send(JSON.stringify({
+                op: 2,
+                d: {
+                    token: BOT_TOKEN,
+                    intents: 0,
+                    properties: { os: "linux", browser: "disco", device: "disco" },
+                    presence: {
+                        status: "online",
+                        activities: [{
+                            name: "Cyclone Store",
+                            type: 3  // type 3 = Watching
+                        }],
+                        afk: false
+                    }
+                }
+            }));
+        }
+
+        if (op === 0 && payload.t === "READY") {
+            console.log("[GATEWAY] Bot online! Tag:", d.user?.username);
+        }
+
+        if (op === 7 || op === 9) {
+            // Reconnect ou Invalid Session
+            console.log("[GATEWAY] Reconectando (op:", op, ")");
+            setTimeout(connectGateway, 3000);
+        }
+    });
+
+    gatewayWs.on("close", (code) => {
+        console.log(`[GATEWAY] Conexao fechada (${code}), reconectando em 5s...`);
+        if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connectGateway, 5000);
+    });
+
+    gatewayWs.on("error", (err) => {
+        console.error("[GATEWAY] Erro WebSocket:", err.message);
+    });
+}
+
+// ============================================================
 // STARTUP
 // ============================================================
 const PORT = process.env.PORT || 3000;
@@ -1131,4 +1258,7 @@ app.listen(PORT, () => {
     console.log(`[STARTUP] API rodando na porta ${PORT}`);
     if (LINK_CHANNEL_ID)
         sendAdminPanelEmbed().catch(() => {});
+    // Conecta ao Gateway para ficar online
+    if (BOT_TOKEN)
+        connectGateway();
 });

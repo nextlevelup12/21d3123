@@ -13,7 +13,7 @@ const GUILD_ID       = process.env.GUILD_ID;
 const ROLE_ID        = process.env.ROLE_ID;
 const API_SECRET     = process.env.API_SECRET;
 const ADMIN_KEY      = process.env.ADMIN_KEY;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || "1464378400717148210";
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 const BASE_URL       = process.env.BASE_URL || "https://21d3123-production.up.railway.app";
 
 console.log("[STARTUP] BOT_TOKEN:",      BOT_TOKEN      ? "OK" : "FALTANDO");

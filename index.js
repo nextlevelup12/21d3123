@@ -8,21 +8,23 @@ app.use(express.json());
 // ============================================================
 // ENV VARS
 // ============================================================
-const BOT_TOKEN      = process.env.BOT_TOKEN;
-const GUILD_ID       = process.env.GUILD_ID;
-const ROLE_ID        = process.env.ROLE_ID;
-const API_SECRET     = process.env.API_SECRET;
-const ADMIN_KEY      = process.env.ADMIN_KEY;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
-const BASE_URL       = process.env.BASE_URL || "https://21d3123-production.up.railway.app";
+const BOT_TOKEN       = process.env.BOT_TOKEN;
+const GUILD_ID        = process.env.GUILD_ID;
+const ROLE_ID         = process.env.ROLE_ID;
+const API_SECRET      = process.env.API_SECRET;
+const ADMIN_KEY       = process.env.ADMIN_KEY;
+const LOG_CHANNEL_ID  = process.env.LOG_CHANNEL_ID;
+const LINK_CHANNEL_ID = process.env.LINK_CHANNEL_ID;
+const BASE_URL        = process.env.BASE_URL || "https://21d3123-production.up.railway.app";
 
-console.log("[STARTUP] BOT_TOKEN:",      BOT_TOKEN      ? "OK" : "FALTANDO");
-console.log("[STARTUP] GUILD_ID:",       GUILD_ID       ? GUILD_ID  : "FALTANDO");
-console.log("[STARTUP] ROLE_ID:",        ROLE_ID        ? ROLE_ID   : "FALTANDO");
-console.log("[STARTUP] API_SECRET:",     API_SECRET     ? "OK" : "FALTANDO");
-console.log("[STARTUP] ADMIN_KEY:",      ADMIN_KEY      ? "OK" : "FALTANDO");
-console.log("[STARTUP] LOG_CHANNEL_ID:", LOG_CHANNEL_ID);
-console.log("[STARTUP] BASE_URL:",       BASE_URL);
+console.log("[STARTUP] BOT_TOKEN:",       BOT_TOKEN       ? "OK" : "FALTANDO");
+console.log("[STARTUP] GUILD_ID:",        GUILD_ID        ? GUILD_ID  : "FALTANDO");
+console.log("[STARTUP] ROLE_ID:",         ROLE_ID         ? ROLE_ID   : "FALTANDO");
+console.log("[STARTUP] API_SECRET:",      API_SECRET      ? "OK" : "FALTANDO");
+console.log("[STARTUP] ADMIN_KEY:",       ADMIN_KEY       ? "OK" : "FALTANDO");
+console.log("[STARTUP] LOG_CHANNEL_ID:",  LOG_CHANNEL_ID  || "NAO DEFINIDO");
+console.log("[STARTUP] LINK_CHANNEL_ID:", LINK_CHANNEL_ID || "NAO DEFINIDO");
+console.log("[STARTUP] BASE_URL:",        BASE_URL);
 
 // ============================================================
 // SQLITE
@@ -851,11 +853,264 @@ app.get("/health", (req, res) => res.json({
     guild_id: GUILD_ID,
     role_id: ROLE_ID,
     log_channel_id: LOG_CHANNEL_ID,
+    link_channel_id: LINK_CHANNEL_ID,
     bot_token_set: !!BOT_TOKEN,
     api_secret_set: !!API_SECRET,
     admin_key_set: !!ADMIN_KEY,
     db_path: DB_PATH
 }));
 
+// 9) Envia embed do painel admin no canal LINK_CHANNEL_ID (chamada manual ou no startup)
+async function sendAdminPanelEmbed() {
+    if (!BOT_TOKEN || !LINK_CHANNEL_ID) {
+        console.log("[ADMIN-EMBED] LINK_CHANNEL_ID nao definido, pulando.");
+        return;
+    }
+
+    const loginUrl = `${BASE_URL}/admin-login`;
+
+    const embed = {
+        title: "🛡️ Painel Administrativo",
+        description: "Acesse o painel para gerenciar HWIDs dos usuários do Loader.",
+        color: 0x2B2D31,
+        fields: [
+            {
+                name: "🔐 Acesso restrito",
+                value: "Apenas administradores com a chave correta podem acessar.",
+                inline: false
+            },
+            {
+                name: "⚙️ Funcionalidades",
+                value: "• Buscar usuário por Discord ID\n• Visualizar HWID vinculado\n• Resetar HWID",
+                inline: false
+            }
+        ],
+        footer: { text: "Cyclone Store · Loader Admin" },
+        timestamp: new Date().toISOString()
+    };
+
+    try {
+        await discordFetch(`/channels/${LINK_CHANNEL_ID}/messages`, {
+            method: "POST",
+            body: JSON.stringify({
+                embeds: [embed],
+                components: [{
+                    type: 1,
+                    components: [{
+                        type: 2,
+                        style: 5,
+                        label: "🔑 Acessar Painel",
+                        url: loginUrl
+                    }]
+                }]
+            })
+        });
+        console.log(`[ADMIN-EMBED] Embed enviada para canal ${LINK_CHANNEL_ID}`);
+    } catch (err) {
+        console.error("[ADMIN-EMBED] Erro ao enviar embed:", err);
+    }
+}
+
+// 10) Rota que envia a embed manualmente (chamada uma vez pra configurar)
+app.post("/send-admin-embed", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    sendAdminPanelEmbed()
+        .then(() => res.json({ success: true, message: "Embed enviada!" }))
+        .catch(err => res.status(500).json({ success: false, message: err.message }));
+});
+
+// 11) Página de login do painel admin (sem key na URL)
+app.get("/admin-login", (req, res) => {
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Login — Cyclone Store Admin</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #161616;
+            color: #ccc;
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .card {
+            background: #1e1e1e;
+            border: 1px solid #2e2e2e;
+            border-radius: 14px;
+            padding: 40px;
+            width: 100%;
+            max-width: 380px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            text-align: center;
+        }
+        .icon {
+            font-size: 36px;
+            margin-bottom: 16px;
+        }
+        .brand {
+            font-size: 11px;
+            color: #444;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 8px;
+        }
+        h2 {
+            font-size: 20px;
+            color: #e0e0e0;
+            margin-bottom: 6px;
+        }
+        .sub {
+            font-size: 13px;
+            color: #555;
+            margin-bottom: 28px;
+        }
+        .input-wrap {
+            position: relative;
+            margin-bottom: 12px;
+        }
+        .input-key {
+            width: 100%;
+            background: #252525;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px 44px 12px 14px;
+            color: #ddd;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            outline: none;
+            transition: border-color .2s;
+            letter-spacing: 1px;
+        }
+        .input-key:focus { border-color: #555; }
+        .input-key::placeholder {
+            color: #444;
+            font-family: 'Segoe UI', sans-serif;
+            letter-spacing: 0;
+        }
+        .toggle-eye {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: #555;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 0;
+            line-height: 1;
+        }
+        .toggle-eye:hover { color: #888; }
+        .btn-login {
+            width: 100%;
+            background: #2a2a2a;
+            border: 1px solid #383838;
+            border-radius: 8px;
+            padding: 12px;
+            color: #aaa;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all .15s;
+            margin-bottom: 12px;
+        }
+        .btn-login:hover { background: #303030; color: #ccc; border-color: #444; }
+        .btn-login:disabled { opacity: 0.5; cursor: default; }
+        .err {
+            font-size: 13px;
+            color: #c0392b;
+            display: none;
+            margin-top: 4px;
+        }
+        .err.show { display: block; }
+        .footer-txt {
+            font-size: 12px;
+            color: #383838;
+            margin-top: 24px;
+        }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="icon">🛡️</div>
+    <div class="brand">Cyclone Store</div>
+    <h2>Painel Admin</h2>
+    <p class="sub">Digite a chave de acesso para continuar.</p>
+
+    <div class="input-wrap">
+        <input class="input-key" id="keyInput" type="password"
+               placeholder="Chave de acesso">
+        <button class="toggle-eye" onclick="toggleVer()" id="eyeBtn">👁</button>
+    </div>
+
+    <button class="btn-login" id="btnLogin" onclick="logar()">Entrar</button>
+    <div class="err" id="errMsg">Chave incorreta. Tente novamente.</div>
+
+    <div class="footer-txt">Cyclone Store · Loader Admin Panel</div>
+</div>
+
+<script>
+function toggleVer() {
+    const input = document.getElementById('keyInput');
+    input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+async function logar() {
+    const key = document.getElementById('keyInput').value.trim();
+    if (!key) return;
+
+    const btn = document.getElementById('btnLogin');
+    btn.disabled = true;
+    btn.textContent = 'Verificando...';
+    document.getElementById('errMsg').classList.remove('show');
+
+    try {
+        const r = await fetch('/admin-login-check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key })
+        });
+        const d = await r.json();
+
+        if (d.success) {
+            window.location.href = '/admin?key=' + encodeURIComponent(key);
+        } else {
+            document.getElementById('errMsg').classList.add('show');
+            btn.disabled = false;
+            btn.textContent = 'Entrar';
+        }
+    } catch(e) {
+        document.getElementById('errMsg').textContent = 'Erro de conexão.';
+        document.getElementById('errMsg').classList.add('show');
+        btn.disabled = false;
+        btn.textContent = 'Entrar';
+    }
+}
+
+document.getElementById('keyInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') logar();
+});
+</script>
+</body>
+</html>`);
+});
+
+// 12) Verifica a chave de login (sem expor a key no front)
+app.post("/admin-login-check", (req, res) => {
+    const { key } = req.body;
+    if (!ADMIN_KEY || key !== ADMIN_KEY)
+        return res.json({ success: false });
+    return res.json({ success: true });
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`[STARTUP] API rodando na porta ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`[STARTUP] API rodando na porta ${PORT}`);
+    // Envia embed do painel admin no canal de link ao iniciar
+    if (LINK_CHANNEL_ID)
+        sendAdminPanelEmbed().catch(() => {});
+});

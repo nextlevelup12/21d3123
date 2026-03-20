@@ -262,11 +262,18 @@ async function sendBlockLog(discord_id, username, hwid, reason, attempts) {
 async function getMemberInfo(discord_id) {
     let username = "Desconhecido";
     let cargo    = "Membro";
+    let avatar   = "";
     try {
         const memberRes = await discordFetch(`/guilds/${GUILD_ID}/members/${discord_id}`);
         if (memberRes.ok) {
             const member = await memberRes.json();
             username = getMemberName(member);
+            // Avatar: server avatar tem prioridade, depois global
+            if (member.avatar)
+                avatar = `https://cdn.discordapp.com/guilds/${GUILD_ID}/users/${discord_id}/avatars/${member.avatar}.png?size=64`;
+            else if (member.user && member.user.avatar)
+                avatar = `https://cdn.discordapp.com/avatars/${discord_id}/${member.user.avatar}.png?size=64`;
+
             if (member.roles && member.roles.length > 0) {
                 const rolesRes = await discordFetch(`/guilds/${GUILD_ID}/roles`);
                 if (rolesRes.ok) {
@@ -288,7 +295,7 @@ async function getMemberInfo(discord_id) {
     } catch (err) {
         console.error("[MEMBER-INFO] Erro:", err);
     }
-    return { username, cargo };
+    return { username, cargo, avatar };
 }
 
 // ============================================================
@@ -399,7 +406,7 @@ app.post("/bind-hwid", async (req, res) => {
         return res.json({ allowed: false, message: `HWID bloqueado por excesso de tentativas. Aguarde ${minRestantes} minuto(s) ou contate o suporte.` });
     }
 
-    const { username, cargo } = await getMemberInfo(discord_id);
+    const { username, cargo, avatar } = await getMemberInfo(discord_id);
 
     const row = db.prepare("SELECT hwid FROM hwid_lock WHERE discord_id = ?").get(discord_id);
 
@@ -407,11 +414,10 @@ app.post("/bind-hwid", async (req, res) => {
         db.prepare("INSERT INTO hwid_lock (discord_id, hwid, created_at, last_login) VALUES (?, ?, ?, ?)")
           .run(discord_id, hwid, Date.now(), Date.now());
         sendLoginLog(discord_id, username, cargo, hwid, true).catch(() => {});
-        return res.json({ allowed: true, message: "HWID registrado.", username, cargo });
+        return res.json({ allowed: true, message: "HWID registrado.", username, cargo, avatar });
     }
 
     if (row.hwid !== hwid) {
-        // HWID errado — registra tentativa e possivelmente aplica castigo
         const attempt = registerFailedAttempt(hwid);
         console.log(`[BIND-HWID] HWID errado para ${discord_id} | tentativa ${attempt.count}`);
 
@@ -428,7 +434,7 @@ app.post("/bind-hwid", async (req, res) => {
     db.prepare("UPDATE hwid_lock SET last_login = ? WHERE discord_id = ?").run(Date.now(), discord_id);
     clearHwidPenalty(hwid);
     sendLoginLog(discord_id, username, cargo, hwid, false).catch(() => {});
-    return res.json({ allowed: true, message: "HWID verificado.", username, cargo });
+    return res.json({ allowed: true, message: "HWID verificado.", username, cargo, avatar });
 });
 
 // 4) Reset de HWID via POST (API direta)

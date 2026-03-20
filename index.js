@@ -1069,7 +1069,6 @@ async function logar() {
 </body>
 </html>`);
 });
-});
 
 // 12) Verifica ID + chave de login
 app.post("/admin-login-check", (req, res) => {

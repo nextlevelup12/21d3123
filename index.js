@@ -711,7 +711,13 @@ app.post("/admin-list", (req, res) => {
 
     const penalties = db.prepare("SELECT hwid, until, attempts FROM hwid_penalty").all();
 
-    return res.json({ success: true, data: rows, penalties });
+    const now = Date.now();
+    const ativos2h  = rows.filter(r => r.last_login && (now - r.last_login) < 2  * 60 * 60 * 1000).length;
+    const ativos24h = rows.filter(r => r.last_login && (now - r.last_login) < 24 * 60 * 60 * 1000).length;
+    const totalReg  = rows.length;
+    const banidos   = rows.filter(r => r.ban_reason).length;
+
+    return res.json({ success: true, data: rows, penalties, stats: { ativos2h, ativos24h, totalReg, banidos } });
 });
 
 // 14) Página de login do painel admin
@@ -1067,6 +1073,26 @@ tr:hover td{background:#1a1a1a;}
 <button class="tab" onclick="showTab('castigo',this)">Castigos Ativos</button>
 </div>
 
+<!-- STATS -->
+<div id="statsBar" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;">
+  <div style="background:#1e1e1e;border:1px solid #2a2a2a;border-radius:10px;padding:14px 16px;">
+    <div style="font-size:11px;color:#555;margin-bottom:6px;letter-spacing:.5px;">Ativos (2h)</div>
+    <div id="stat2h" style="font-size:26px;color:#8e8;font-weight:500;">—</div>
+  </div>
+  <div style="background:#1e1e1e;border:1px solid #2a2a2a;border-radius:10px;padding:14px 16px;">
+    <div style="font-size:11px;color:#555;margin-bottom:6px;letter-spacing:.5px;">Ativos (24h)</div>
+    <div id="stat24h" style="font-size:26px;color:#adf;font-weight:500;">—</div>
+  </div>
+  <div style="background:#1e1e1e;border:1px solid #2a2a2a;border-radius:10px;padding:14px 16px;">
+    <div style="font-size:11px;color:#555;margin-bottom:6px;letter-spacing:.5px;">Total registrados</div>
+    <div id="statTotal" style="font-size:26px;color:#e0e0e0;font-weight:500;">—</div>
+  </div>
+  <div style="background:#1e1e1e;border:1px solid #2a2a2a;border-radius:10px;padding:14px 16px;">
+    <div style="font-size:11px;color:#555;margin-bottom:6px;letter-spacing:.5px;">Banidos</div>
+    <div id="statBanidos" style="font-size:26px;color:#e88;font-weight:500;">—</div>
+  </div>
+</div>
+
 <!-- TAB BUSCAR -->
 <div class="section active" id="tab-buscar">
 <div class="card">
@@ -1259,6 +1285,7 @@ async function limparBroadcast() {
 function salvarMensagem() {}
 
 carregarStatus();
+carregarLista(); // carrega stats na abertura
 
 function fmtDate(ts) {
     if(!ts) return '—';
@@ -1353,6 +1380,15 @@ async function carregarLista() {
         const r = await fetch('/admin-list',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:ADMIN_KEY})});
         const d = await r.json();
         if(!d.success) return showErr('errLista','Erro ao carregar.');
+
+        // Atualiza stats
+        if(d.stats) {
+            document.getElementById('stat2h').textContent     = d.stats.ativos2h;
+            document.getElementById('stat24h').textContent    = d.stats.ativos24h;
+            document.getElementById('statTotal').textContent  = d.stats.totalReg;
+            document.getElementById('statBanidos').textContent= d.stats.banidos;
+        }
+
         if(!d.data.length){ tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:#444;padding:24px">Nenhum usuário registrado</td></tr>'; return; }
         tbody.innerHTML = d.data.map(u => {
             const banned = u.ban_reason !== null && u.ban_reason !== undefined;

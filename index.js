@@ -435,7 +435,7 @@ app.post("/bind-hwid", async (req, res) => {
         db.prepare("INSERT INTO hwid_lock (discord_id, hwid, created_at, last_login) VALUES (?, ?, ?, ?)")
           .run(discord_id, hwid, Date.now(), Date.now());
         sendLoginLog(discord_id, username, cargo, hwid, true).catch(() => {});
-        return res.json({ allowed: true, message: "HWID registrado.", username, cargo, avatar });
+        return res.json({ allowed: true, message: "HWID registrado.", username, cargo, avatar, server_status: getLoaderStatus() });
     }
 
     if (row.hwid !== hwid) {
@@ -455,7 +455,7 @@ app.post("/bind-hwid", async (req, res) => {
     db.prepare("UPDATE hwid_lock SET last_login = ? WHERE discord_id = ?").run(Date.now(), discord_id);
     clearHwidPenalty(hwid);
     sendLoginLog(discord_id, username, cargo, hwid, false).catch(() => {});
-    return res.json({ allowed: true, message: "HWID verificado.", username, cargo, avatar });
+    return res.json({ allowed: true, message: "HWID verificado.", username, cargo, avatar, server_status: getLoaderStatus() });
 });
 
 // 4) Reset de HWID via POST (API direta)

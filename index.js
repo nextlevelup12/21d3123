@@ -60,6 +60,26 @@ db.exec(`
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS hwid_blacklist (
+    hwid      TEXT PRIMARY KEY,
+    reason    TEXT,
+    added_at  INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS login_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    discord_id TEXT NOT NULL,
+    username   TEXT,
+    hwid       TEXT,
+    logged_at  INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS cheat_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    discord_id TEXT NOT NULL,
+    username   TEXT,
+    hwid       TEXT,
+    reason     TEXT,
+    detected_at INTEGER NOT NULL
+  );
 `);
 
 // Garante que o status existe com valor padrão
@@ -266,6 +286,46 @@ async function sendBlockLog(discord_id, username, hwid, reason, attempts) {
 }
 
 // ============================================================
+// PAUSAR TODAS AS KEYS
+// ============================================================
+function getAllKeysPaused() {
+    const row = db.prepare("SELECT value FROM server_config WHERE key = 'keys_paused'").get();
+    return row ? row.value === 'true' : false;
+}
+function setAllKeysPaused(paused) {
+    db.prepare("INSERT OR REPLACE INTO server_config (key, value) VALUES ('keys_paused', ?)").run(paused ? 'true' : 'false');
+}
+
+// ============================================================
+// HWID BLACKLIST
+// ============================================================
+function isHwidBlacklisted(hwid) {
+    return !!db.prepare("SELECT 1 FROM hwid_blacklist WHERE hwid = ?").get(hwid);
+}
+function addHwidBlacklist(hwid, reason) {
+    db.prepare("INSERT OR REPLACE INTO hwid_blacklist (hwid, reason, added_at) VALUES (?, ?, ?)").run(hwid, reason || '', Date.now());
+}
+function removeHwidBlacklist(hwid) {
+    db.prepare("DELETE FROM hwid_blacklist WHERE hwid = ?").run(hwid);
+}
+
+// ============================================================
+// LOGIN LOG
+// ============================================================
+function logLogin(discord_id, username, hwid) {
+    db.prepare("INSERT INTO login_log (discord_id, username, hwid, logged_at) VALUES (?, ?, ?, ?)").run(discord_id, username, hwid, Date.now());
+    // Mantém só os últimos 500 registros
+    db.prepare("DELETE FROM login_log WHERE id NOT IN (SELECT id FROM login_log ORDER BY id DESC LIMIT 500)").run();
+}
+
+// ============================================================
+// CHEAT LOG
+// ============================================================
+function logCheat(discord_id, username, hwid, reason) {
+    db.prepare("INSERT INTO cheat_log (discord_id, username, hwid, reason, detected_at) VALUES (?, ?, ?, ?, ?)").run(discord_id, username, hwid, reason, Date.now());
+}
+
+// ============================================================
 // STATUS DO LOADER
 // ============================================================
 function getLoaderStatus() {
@@ -447,6 +507,17 @@ app.post("/bind-hwid", async (req, res) => {
         return res.json({ allowed: false, message: "Sua conta foi banida. Contate o suporte." });
     }
 
+    // Verifica blacklist de HWID
+    if (isHwidBlacklisted(hwid)) {
+        const { username } = await getMemberInfo(discord_id).catch(() => ({ username: "Desconhecido" }));
+        sendBlockLog(discord_id, username, hwid, "HWID na blacklist global", 0).catch(() => {});
+        return res.json({ allowed: false, message: "Acesso negado: hardware bloqueado. Contate o suporte." });
+    }
+
+    // Verifica se todas as keys estão pausadas
+    if (getAllKeysPaused())
+        return res.json({ allowed: false, message: "Acesso temporariamente pausado pelo administrador. Aguarde." });
+
     // Verifica castigo de HWID
     const penaltyUntil = checkHwidPenalty(hwid);
     if (penaltyUntil) {
@@ -461,11 +532,13 @@ app.post("/bind-hwid", async (req, res) => {
     if (!row) {
         db.prepare("INSERT INTO hwid_lock (discord_id, hwid, created_at, last_login) VALUES (?, ?, ?, ?)")
           .run(discord_id, hwid, Date.now(), Date.now());
+        logLogin(discord_id, username, hwid);
         sendLoginLog(discord_id, username, cargo, hwid, true).catch(() => {});
         return res.json({ allowed: true, message: "HWID registrado.", username, cargo, avatar, server_status: getLoaderStatus(), server_message: getLoaderMessage() });
     }
 
     if (row.hwid !== hwid) {
+        // HWID diferente — limite fixo de 1 PC
         const attempt = registerFailedAttempt(hwid);
         console.log(`[BIND-HWID] HWID errado para ${discord_id} | tentativa ${attempt.count}`);
 
@@ -474,13 +547,14 @@ app.post("/bind-hwid", async (req, res) => {
             return res.json({ allowed: false, message: `Muitas tentativas incorretas. HWID bloqueado por 1 hora.` });
         }
 
-        sendBlockLog(discord_id, username, hwid, `HWID incorreto (tentativa ${attempt.count}/${MAX_ATTEMPTS})`, attempt.count).catch(() => {});
-        return res.json({ allowed: false, message: `Acesso negado: PC diferente. Tentativa ${attempt.count}/${MAX_ATTEMPTS}. Contate o suporte.` });
+        sendBlockLog(discord_id, username, hwid, `HWID incorreto — PC nao autorizado (tentativa ${attempt.count}/${MAX_ATTEMPTS})`, attempt.count).catch(() => {});
+        return res.json({ allowed: false, message: `Acesso negado: este PC nao esta autorizado. Apenas 1 PC por conta. Contate o suporte.` });
     }
 
     // HWID correto — atualiza last_login e limpa tentativas
     db.prepare("UPDATE hwid_lock SET last_login = ? WHERE discord_id = ?").run(Date.now(), discord_id);
     clearHwidPenalty(hwid);
+    logLogin(discord_id, username, hwid);
     sendLoginLog(discord_id, username, cargo, hwid, false).catch(() => {});
     return res.json({ allowed: true, message: "HWID verificado.", username, cargo, avatar, server_status: getLoaderStatus(), server_message: getLoaderMessage() });
 });
@@ -601,6 +675,88 @@ app.post("/check-status", (req, res) => {
 });
 
 // 9) Tirar castigo de HWID
+// ============================================================
+// PAUSAR / DESPAUSAR TODAS AS KEYS
+// ============================================================
+app.post("/toggle-keys-pause", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    const { paused } = req.body;
+    setAllKeysPaused(!!paused);
+    console.log(`[KEYS-PAUSE] Keys ${paused ? 'pausadas' : 'despausadas'}`);
+    return res.json({ success: true, paused: !!paused });
+});
+
+app.get("/keys-pause-status", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    return res.json({ paused: getAllKeysPaused() });
+});
+
+// ============================================================
+// BLACKLIST DE HWID
+// ============================================================
+app.post("/blacklist-hwid", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    const { hwid, reason } = req.body;
+    if (!hwid) return res.status(400).json({ success: false, message: "HWID obrigatorio." });
+    addHwidBlacklist(hwid, reason);
+    return res.json({ success: true });
+});
+
+app.post("/unblacklist-hwid", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    const { hwid } = req.body;
+    if (!hwid) return res.status(400).json({ success: false });
+    removeHwidBlacklist(hwid);
+    return res.json({ success: true });
+});
+
+app.get("/list-blacklist", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    const rows = db.prepare("SELECT hwid, reason, added_at FROM hwid_blacklist ORDER BY added_at DESC").all();
+    return res.json({ success: true, data: rows });
+});
+
+// ============================================================
+// STATS DE LOGIN — últimos 7 dias e horários de pico
+// ============================================================
+app.get("/login-stats", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+
+    // Logins por dia (últimos 7 dias)
+    const days = [];
+    for (let i = 6; i >= 0; i--) {
+        const from = now - (i + 1) * day;
+        const to   = now - i * day;
+        const count = db.prepare("SELECT COUNT(*) as c FROM login_log WHERE logged_at >= ? AND logged_at < ?").get(from, to).c;
+        const label = new Date(to).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' });
+        days.push({ label, count });
+    }
+
+    // Horários de pico (agrupado por hora do dia, últimos 7 dias)
+    const from7d = now - 7 * day;
+    const allLogs = db.prepare("SELECT logged_at FROM login_log WHERE logged_at >= ?").all(from7d);
+    const hourMap = new Array(24).fill(0);
+    allLogs.forEach(r => {
+        const h = new Date(r.logged_at).getHours();
+        hourMap[h]++;
+    });
+    const hours = hourMap.map((count, h) => ({ hour: `${String(h).padStart(2,'0')}h`, count }));
+
+    return res.json({ success: true, days, hours });
+});
+
+// ============================================================
+// CHEAT LOG
+// ============================================================
+app.get("/cheat-log", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    const rows = db.prepare("SELECT * FROM cheat_log ORDER BY detected_at DESC LIMIT 50").all();
+    return res.json({ success: true, data: rows });
+});
+
 // Set status do loader
 app.post("/set-server-status", (req, res) => {
     if (!checkAdmin(req, res)) return;
@@ -1450,14 +1606,18 @@ app.post("/report-cheat", async (req, res) => {
     // Bane o ID automaticamente
     banId(discord_id, `Auto-ban: ${reason}`);
 
-    // Coloca HWID em castigo permanente (until = ano 2099)
+    // Coloca HWID em castigo permanente (until = ano 2099) e na blacklist global
     const until = 4102444800000;
-    db.prepare("INSERT OR REPLACE INTO hwid_penalty (hwid, until, attempts) VALUES (?, ?, ?)")
-      .run(hwid, until, 999);
+    db.prepare("INSERT OR REPLACE INTO hwid_penalty (hwid, until, attempts) VALUES (?, ?, ?)").run(hwid, until, 999);
+    addHwidBlacklist(hwid, `Auto-ban: ${reason}`);
 
-    // Busca infos e manda log no canal
+    // Busca infos
     const { username, cargo } = await getMemberInfo(discord_id).catch(() => ({ username: "Desconhecido", cargo: "Membro" }));
 
+    // Salva no cheat_log
+    logCheat(discord_id, username, hwid, reason);
+
+    // Alerta no canal de logs (mesmo canal dos logins)
     if (BOT_TOKEN && LOG_CHANNEL_ID) {
         const embed = {
             title: "🔴 Detecção de Cheat — Auto-Ban",
@@ -1471,7 +1631,7 @@ app.post("/report-cheat", async (req, res) => {
                 { name: "⚠️ Motivo", value: `\`${reason}\``,      inline: false },
             ],
             timestamp: new Date().toISOString(),
-            footer: { text: "Cyclone Store | Anti-Cheat" }
+            footer: { text: "Cyclone Store | Anti-Cheat · HWID adicionado à blacklist global" }
         };
         discordFetch(`/channels/${LOG_CHANNEL_ID}/messages`, {
             method: "POST",
@@ -1488,78 +1648,135 @@ app.post("/report-cheat", async (req, res) => {
 const https = require("https");
 const WebSocket = require("ws");
 
-let gatewayWs = null;
+let gatewayWs        = null;
 let heartbeatInterval = null;
-let gatewaySequence = null;
-let reconnectTimer = null;
+let gatewaySequence  = null;
+let reconnectTimer   = null;
+let sessionId        = null;
+let resumeGatewayUrl = null;
+let reconnectDelay   = 5000;   // começa em 5s
+const MAX_DELAY      = 120000; // máximo 2 minutos
+let isReconnecting   = false;
+
+function scheduleReconnect() {
+    if (isReconnecting) return;
+    isReconnecting = true;
+    if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+    if (reconnectTimer)    { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
+    console.log(`[GATEWAY] Reconectando em ${reconnectDelay / 1000}s...`);
+    reconnectTimer = setTimeout(() => {
+        isReconnecting = false;
+        connectGateway();
+    }, reconnectDelay);
+
+    // backoff exponencial: dobra o delay a cada tentativa até MAX_DELAY
+    reconnectDelay = Math.min(reconnectDelay * 2, MAX_DELAY);
+}
 
 function connectGateway() {
     if (gatewayWs) {
-        try { gatewayWs.terminate(); } catch (_) {}
+        try { gatewayWs.removeAllListeners(); gatewayWs.terminate(); } catch (_) {}
+        gatewayWs = null;
     }
     if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
 
-    console.log("[GATEWAY] Conectando ao Discord...");
-    gatewayWs = new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
+    // Usa resume URL se disponível, senão gateway padrão
+    const url = (resumeGatewayUrl || "wss://gateway.discord.gg") + "/?v=10&encoding=json";
+    console.log("[GATEWAY] Conectando...");
+    gatewayWs = new WebSocket(url);
 
     gatewayWs.on("open", () => {
-        console.log("[GATEWAY] Conectado ao WebSocket do Discord");
+        console.log("[GATEWAY] WebSocket aberto");
     });
 
     gatewayWs.on("message", (data) => {
-        const payload = JSON.parse(data);
-        const { op, d, s } = payload;
+        let payload;
+        try { payload = JSON.parse(data); } catch { return; }
+        const { op, d, s, t } = payload;
 
         if (s) gatewaySequence = s;
 
         if (op === 10) {
-            // Hello — inicia heartbeat
+            // Hello — inicia heartbeat com jitter para não sincronizar
             const interval = d.heartbeat_interval;
-            heartbeatInterval = setInterval(() => {
-                if (gatewayWs && gatewayWs.readyState === WebSocket.OPEN) {
+            const jitter = Math.random() * interval;
+            setTimeout(() => {
+                if (gatewayWs?.readyState === WebSocket.OPEN)
                     gatewayWs.send(JSON.stringify({ op: 1, d: gatewaySequence }));
-                }
+            }, jitter);
+            heartbeatInterval = setInterval(() => {
+                if (gatewayWs?.readyState === WebSocket.OPEN)
+                    gatewayWs.send(JSON.stringify({ op: 1, d: gatewaySequence }));
             }, interval);
 
-            // Identify
-            gatewayWs.send(JSON.stringify({
-                op: 2,
-                d: {
-                    token: BOT_TOKEN,
-                    intents: 0,
-                    properties: { os: "linux", browser: "disco", device: "disco" },
-                    presence: {
-                        status: "online",
-                        activities: [{
-                            name: "Cyclone Store",
-                            type: 3  // type 3 = Watching
-                        }],
-                        afk: false
+            // Resume se tiver session, senão Identify
+            if (sessionId && gatewaySequence) {
+                console.log("[GATEWAY] Tentando RESUME...");
+                gatewayWs.send(JSON.stringify({
+                    op: 6,
+                    d: { token: BOT_TOKEN, session_id: sessionId, seq: gatewaySequence }
+                }));
+            } else {
+                gatewayWs.send(JSON.stringify({
+                    op: 2,
+                    d: {
+                        token: BOT_TOKEN,
+                        intents: 0,
+                        properties: { os: "linux", browser: "disco", device: "disco" },
+                        presence: {
+                            status: "online",
+                            activities: [{ name: "Cyclone Store", type: 3 }],
+                            afk: false
+                        }
                     }
-                }
-            }));
+                }));
+            }
         }
 
-        if (op === 0 && payload.t === "READY") {
-            console.log("[GATEWAY] Bot online! Tag:", d.user?.username);
+        if (op === 0 && t === "READY") {
+            sessionId        = d.session_id;
+            resumeGatewayUrl = d.resume_gateway_url;
+            reconnectDelay   = 5000; // reset delay ao conectar com sucesso
+            console.log("[GATEWAY] Bot online:", d.user?.username);
         }
 
-        if (op === 7 || op === 9) {
-            // Reconnect ou Invalid Session
-            console.log("[GATEWAY] Reconectando (op:", op, ")");
-            setTimeout(connectGateway, 3000);
+        if (op === 0 && t === "RESUMED") {
+            reconnectDelay = 5000;
+            console.log("[GATEWAY] Sessão retomada com sucesso");
         }
+
+        if (op === 7) {
+            // Reconnect pedido pelo Discord
+            console.log("[GATEWAY] Discord pediu reconnect");
+            scheduleReconnect();
+        }
+
+        if (op === 9) {
+            // Invalid session — se d=true pode tentar resume, senão nova session
+            console.log("[GATEWAY] Invalid session (resumable:", d, ")");
+            if (!d) { sessionId = null; resumeGatewayUrl = null; }
+            scheduleReconnect();
+        }
+
+        // op 11 = heartbeat ACK — tudo certo
     });
 
     gatewayWs.on("close", (code) => {
-        console.log(`[GATEWAY] Conexao fechada (${code}), reconectando em 5s...`);
-        if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
-        if (reconnectTimer) clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(connectGateway, 5000);
+        console.log(`[GATEWAY] Fechado (code: ${code})`);
+        // 4004 = token inválido, 4010 = shard inválido — não reconectar
+        if (code === 4004 || code === 4010 || code === 4011 || code === 4013 || code === 4014) {
+            console.error("[GATEWAY] Erro fatal, não reconectando. Code:", code);
+            return;
+        }
+        // 4007 / 4009 = session inválida
+        if (code === 4007 || code === 4009) { sessionId = null; resumeGatewayUrl = null; }
+        scheduleReconnect();
     });
 
     gatewayWs.on("error", (err) => {
-        console.error("[GATEWAY] Erro WebSocket:", err.message);
+        console.error("[GATEWAY] Erro:", err.message);
+        // não chama reconnect aqui — o close event vai disparar
     });
 }
 

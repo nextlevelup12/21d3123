@@ -270,11 +270,18 @@ async function sendBlockLog(discord_id, username, hwid, reason, attempts) {
 // ============================================================
 function getLoaderStatus() {
     const row = db.prepare("SELECT value FROM server_config WHERE key = 'loader_status'").get();
-    return row ? row.value : 'online'; // 'online' | 'manutencao' | 'offline'
+    return row ? row.value : 'online';
 }
 
-function setLoaderStatus(status) {
+function getLoaderMessage() {
+    const row = db.prepare("SELECT value FROM server_config WHERE key = 'loader_message'").get();
+    return row ? row.value : '';
+}
+
+function setLoaderStatus(status, message) {
     db.prepare("INSERT OR REPLACE INTO server_config (key, value) VALUES ('loader_status', ?)").run(status);
+    if (message !== undefined)
+        db.prepare("INSERT OR REPLACE INTO server_config (key, value) VALUES ('loader_message', ?)").run(message || '');
 }
 
 // ============================================================
@@ -435,7 +442,7 @@ app.post("/bind-hwid", async (req, res) => {
         db.prepare("INSERT INTO hwid_lock (discord_id, hwid, created_at, last_login) VALUES (?, ?, ?, ?)")
           .run(discord_id, hwid, Date.now(), Date.now());
         sendLoginLog(discord_id, username, cargo, hwid, true).catch(() => {});
-        return res.json({ allowed: true, message: "HWID registrado.", username, cargo, avatar, server_status: getLoaderStatus() });
+        return res.json({ allowed: true, message: "HWID registrado.", username, cargo, avatar, server_status: getLoaderStatus(), server_message: getLoaderMessage() });
     }
 
     if (row.hwid !== hwid) {
@@ -455,7 +462,7 @@ app.post("/bind-hwid", async (req, res) => {
     db.prepare("UPDATE hwid_lock SET last_login = ? WHERE discord_id = ?").run(Date.now(), discord_id);
     clearHwidPenalty(hwid);
     sendLoginLog(discord_id, username, cargo, hwid, false).catch(() => {});
-    return res.json({ allowed: true, message: "HWID verificado.", username, cargo, avatar, server_status: getLoaderStatus() });
+    return res.json({ allowed: true, message: "HWID verificado.", username, cargo, avatar, server_status: getLoaderStatus(), server_message: getLoaderMessage() });
 });
 
 // 4) Reset de HWID via POST (API direta)
@@ -570,25 +577,25 @@ app.post("/check-status", (req, res) => {
 
     // Retorna status do servidor (online/manutencao/offline)
     const loaderStatus = getLoaderStatus();
-    return res.json({ active: true, server_status: loaderStatus });
+    return res.json({ active: true, server_status: loaderStatus, server_message: getLoaderMessage() });
 });
 
 // 9) Tirar castigo de HWID
 // Set status do loader
 app.post("/set-server-status", (req, res) => {
     if (!checkAdmin(req, res)) return;
-    const { status } = req.body;
+    const { status, message } = req.body;
     if (!['online', 'manutencao', 'offline'].includes(status))
         return res.status(400).json({ success: false, message: "Status invalido. Use: online, manutencao, offline." });
-    setLoaderStatus(status);
-    console.log(`[SERVER-STATUS] Status alterado para: ${status}`);
-    return res.json({ success: true, status });
+    setLoaderStatus(status, message);
+    console.log(`[SERVER-STATUS] Status alterado para: ${status} | Mensagem: ${message || '(sem mensagem)'}`);
+    return res.json({ success: true, status, message: message || '' });
 });
 
 // Get status atual do loader
 app.get("/get-server-status", (req, res) => {
     if (!checkAdmin(req, res)) return;
-    return res.json({ status: getLoaderStatus() });
+    return res.json({ status: getLoaderStatus(), message: getLoaderMessage() });
 });
 
 app.post("/clear-penalty", (req, res) => {
@@ -938,7 +945,7 @@ tr:hover td{background:#1a1a1a;}
 
 <!-- STATUS DO LOADER -->
 <div class="card" style="margin-bottom:16px;">
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
   <div style="display:flex;align-items:center;gap:10px;">
     <div style="font-size:14px;color:#e0e0e0;font-weight:500;">Status do Loader</div>
     <span id="statusBadge" style="padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600;">carregando...</span>
@@ -949,8 +956,12 @@ tr:hover td{background:#1a1a1a;}
     <button class="btn btn-danger"  onclick="setStatus('offline')">🔴 Offline</button>
   </div>
 </div>
-<div class="ok-msg" id="statusOk"></div>
-<div class="err"    id="statusErr"></div>
+<div style="display:flex;gap:8px;align-items:center;">
+  <input type="text" id="inputStatusMsg" placeholder="Mensagem para o loader (ex: Voltamos em 20 minutos)" style="flex:1;font-family:'Segoe UI',sans-serif;">
+  <button class="btn" onclick="salvarMensagem()">Salvar mensagem</button>
+</div>
+<div class="ok-msg" id="statusOk" style="margin-top:10px;"></div>
+<div class="err"    id="statusErr" style="margin-top:10px;"></div>
 </div>
 
 <div class="tabs">
@@ -1058,6 +1069,7 @@ async function carregarStatus() {
         const r = await fetch('/get-server-status', {headers:{'x-admin-key':ADMIN_KEY}});
         const d = await r.json();
         atualizarBadge(d.status);
+        if(d.message) document.getElementById('inputStatusMsg').value = d.message;
     } catch(e) {}
 }
 
@@ -1071,19 +1083,36 @@ function atualizarBadge(status) {
 }
 
 async function setStatus(status) {
+    const message = document.getElementById('inputStatusMsg').value.trim();
     try {
         const r = await fetch('/set-server-status', {
             method:'POST',
             headers:{'Content-Type':'application/json','x-admin-key':ADMIN_KEY},
-            body: JSON.stringify({status})
+            body: JSON.stringify({status, message})
         });
         const d = await r.json();
         if(d.success) {
             atualizarBadge(status);
-            showOk('statusOk', 'Status alterado para: ' + STATUS_STYLES[status].label);
+            showOk('statusOk', 'Status alterado para: ' + STATUS_STYLES[status].label + (message ? ' · "' + message + '"' : ''));
         } else {
             showErr('statusErr', d.message || 'Erro ao alterar status.');
         }
+    } catch(e) { showErr('statusErr', 'Erro de conexão.'); }
+}
+
+async function salvarMensagem() {
+    const status = document.getElementById('statusBadge').textContent.includes('Online') ? 'online'
+                 : document.getElementById('statusBadge').textContent.includes('Manutenção') ? 'manutencao' : 'offline';
+    const message = document.getElementById('inputStatusMsg').value.trim();
+    try {
+        const r = await fetch('/set-server-status', {
+            method:'POST',
+            headers:{'Content-Type':'application/json','x-admin-key':ADMIN_KEY},
+            body: JSON.stringify({status, message})
+        });
+        const d = await r.json();
+        if(d.success) showOk('statusOk', 'Mensagem salva!');
+        else showErr('statusErr', d.message || 'Erro.');
     } catch(e) { showErr('statusErr', 'Erro de conexão.'); }
 }
 

@@ -56,7 +56,16 @@ db.exec(`
     count      INTEGER NOT NULL DEFAULT 0,
     last_try   INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS server_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
+
+// Garante que o status existe com valor padrão
+const existingStatus = db.prepare("SELECT value FROM server_config WHERE key = 'loader_status'").get();
+if (!existingStatus)
+    db.prepare("INSERT INTO server_config (key, value) VALUES ('loader_status', 'online')").run();
 
 // Migracao: adiciona last_login se nao existir
 try { db.exec(`ALTER TABLE hwid_lock ADD COLUMN last_login INTEGER`); } catch (_) {}
@@ -254,6 +263,18 @@ async function sendBlockLog(discord_id, username, hwid, reason, attempts) {
     } catch (err) {
         console.error("[LOG] Erro ao enviar block log:", err);
     }
+}
+
+// ============================================================
+// STATUS DO LOADER
+// ============================================================
+function getLoaderStatus() {
+    const row = db.prepare("SELECT value FROM server_config WHERE key = 'loader_status'").get();
+    return row ? row.value : 'online'; // 'online' | 'manutencao' | 'offline'
+}
+
+function setLoaderStatus(status) {
+    db.prepare("INSERT OR REPLACE INTO server_config (key, value) VALUES ('loader_status', ?)").run(status);
 }
 
 // ============================================================
@@ -547,10 +568,29 @@ app.post("/check-status", (req, res) => {
     if (row.hwid !== hwid)
         return res.json({ active: false, reason: "hwid_mismatch", message: "PC nao autorizado. Faca login novamente." });
 
-    return res.json({ active: true });
+    // Retorna status do servidor (online/manutencao/offline)
+    const loaderStatus = getLoaderStatus();
+    return res.json({ active: true, server_status: loaderStatus });
 });
 
 // 9) Tirar castigo de HWID
+// Set status do loader
+app.post("/set-server-status", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    const { status } = req.body;
+    if (!['online', 'manutencao', 'offline'].includes(status))
+        return res.status(400).json({ success: false, message: "Status invalido. Use: online, manutencao, offline." });
+    setLoaderStatus(status);
+    console.log(`[SERVER-STATUS] Status alterado para: ${status}`);
+    return res.json({ success: true, status });
+});
+
+// Get status atual do loader
+app.get("/get-server-status", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    return res.json({ status: getLoaderStatus() });
+});
+
 app.post("/clear-penalty", (req, res) => {
     if (!checkAdmin(req, res)) return;
     const { hwid } = req.body;
@@ -896,6 +936,23 @@ tr:hover td{background:#1a1a1a;}
 <div><div class="brand">Cyclone Store &middot; Painel Admin</div><h1>Gerenciamento</h1></div>
 </div>
 
+<!-- STATUS DO LOADER -->
+<div class="card" style="margin-bottom:16px;">
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+  <div style="display:flex;align-items:center;gap:10px;">
+    <div style="font-size:14px;color:#e0e0e0;font-weight:500;">Status do Loader</div>
+    <span id="statusBadge" style="padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600;">carregando...</span>
+  </div>
+  <div style="display:flex;gap:8px;">
+    <button class="btn btn-success" onclick="setStatus('online')">🟢 Online</button>
+    <button class="btn btn-warn"    onclick="setStatus('manutencao')">🟡 Manutenção</button>
+    <button class="btn btn-danger"  onclick="setStatus('offline')">🔴 Offline</button>
+  </div>
+</div>
+<div class="ok-msg" id="statusOk"></div>
+<div class="err"    id="statusErr"></div>
+</div>
+
 <div class="tabs">
 <button class="tab active" onclick="showTab('buscar',this)">Buscar ID</button>
 <button class="tab" onclick="showTab('lista',this)">Todos Usuários</button>
@@ -988,6 +1045,49 @@ function showTab(name, el) {
     if(name==='lista') carregarLista();
     if(name==='castigo') carregarCastigos();
 }
+
+// Status do Loader
+const STATUS_STYLES = {
+    online:     { bg:'#152a15', color:'#8e8', border:'#204a20', label:'🟢 Online' },
+    manutencao: { bg:'#2a2515', color:'#ee8', border:'#4a4020', label:'🟡 Manutenção' },
+    offline:    { bg:'#2a1515', color:'#e88', border:'#4a2020', label:'🔴 Offline' }
+};
+
+async function carregarStatus() {
+    try {
+        const r = await fetch('/get-server-status', {headers:{'x-admin-key':ADMIN_KEY}});
+        const d = await r.json();
+        atualizarBadge(d.status);
+    } catch(e) {}
+}
+
+function atualizarBadge(status) {
+    const badge = document.getElementById('statusBadge');
+    const s = STATUS_STYLES[status] || STATUS_STYLES.online;
+    badge.textContent = s.label;
+    badge.style.background = s.bg;
+    badge.style.color = s.color;
+    badge.style.border = '1px solid ' + s.border;
+}
+
+async function setStatus(status) {
+    try {
+        const r = await fetch('/set-server-status', {
+            method:'POST',
+            headers:{'Content-Type':'application/json','x-admin-key':ADMIN_KEY},
+            body: JSON.stringify({status})
+        });
+        const d = await r.json();
+        if(d.success) {
+            atualizarBadge(status);
+            showOk('statusOk', 'Status alterado para: ' + STATUS_STYLES[status].label);
+        } else {
+            showErr('statusErr', d.message || 'Erro ao alterar status.');
+        }
+    } catch(e) { showErr('statusErr', 'Erro de conexão.'); }
+}
+
+carregarStatus();
 
 function fmtDate(ts) {
     if(!ts) return '—';

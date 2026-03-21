@@ -274,14 +274,34 @@ function getLoaderStatus() {
 }
 
 function getLoaderMessage() {
-    const row = db.prepare("SELECT value FROM server_config WHERE key = 'loader_message'").get();
+    // Retorna mensagem do status atual
+    const status = getLoaderStatus();
+    const row = db.prepare("SELECT value FROM server_config WHERE key = ?").get(`msg_${status}`);
+    return row ? row.value : '';
+}
+
+function getMessageForStatus(status) {
+    const row = db.prepare("SELECT value FROM server_config WHERE key = ?").get(`msg_${status}`);
+    return row ? row.value : '';
+}
+
+function getBroadcast() {
+    const row = db.prepare("SELECT value FROM server_config WHERE key = 'broadcast'").get();
     return row ? row.value : '';
 }
 
 function setLoaderStatus(status, message) {
     db.prepare("INSERT OR REPLACE INTO server_config (key, value) VALUES ('loader_status', ?)").run(status);
     if (message !== undefined)
-        db.prepare("INSERT OR REPLACE INTO server_config (key, value) VALUES ('loader_message', ?)").run(message || '');
+        db.prepare("INSERT OR REPLACE INTO server_config (key, value) VALUES (?, ?)").run(`msg_${status}`, message || '');
+}
+
+function setMessageForStatus(status, message) {
+    db.prepare("INSERT OR REPLACE INTO server_config (key, value) VALUES (?, ?)").run(`msg_${status}`, message || '');
+}
+
+function setBroadcast(msg) {
+    db.prepare("INSERT OR REPLACE INTO server_config (key, value) VALUES ('broadcast', ?)").run(msg || '');
 }
 
 // ============================================================
@@ -577,25 +597,50 @@ app.post("/check-status", (req, res) => {
 
     // Retorna status do servidor (online/manutencao/offline)
     const loaderStatus = getLoaderStatus();
-    return res.json({ active: true, server_status: loaderStatus, server_message: getLoaderMessage() });
+    return res.json({ active: true, server_status: loaderStatus, server_message: getLoaderMessage(), broadcast: getBroadcast() });
 });
 
 // 9) Tirar castigo de HWID
 // Set status do loader
 app.post("/set-server-status", (req, res) => {
     if (!checkAdmin(req, res)) return;
+    const { status } = req.body;
+    if (!['online', 'manutencao', 'offline'].includes(status))
+        return res.status(400).json({ success: false, message: "Status invalido." });
+    setLoaderStatus(status);
+    console.log(`[SERVER-STATUS] Status alterado para: ${status}`);
+    return res.json({ success: true, status });
+});
+
+// Salva mensagem de um status específico
+app.post("/save-status-message", (req, res) => {
+    if (!checkAdmin(req, res)) return;
     const { status, message } = req.body;
     if (!['online', 'manutencao', 'offline'].includes(status))
-        return res.status(400).json({ success: false, message: "Status invalido. Use: online, manutencao, offline." });
-    setLoaderStatus(status, message);
-    console.log(`[SERVER-STATUS] Status alterado para: ${status} | Mensagem: ${message || '(sem mensagem)'}`);
-    return res.json({ success: true, status, message: message || '' });
+        return res.status(400).json({ success: false, message: "Status invalido." });
+    setMessageForStatus(status, message);
+    return res.json({ success: true });
+});
+
+// Broadcast — mensagem em tempo real para todos os usuários logados
+app.post("/set-broadcast", (req, res) => {
+    if (!checkAdmin(req, res)) return;
+    const { message } = req.body;
+    setBroadcast(message || '');
+    return res.json({ success: true });
 });
 
 // Get status atual do loader
 app.get("/get-server-status", (req, res) => {
     if (!checkAdmin(req, res)) return;
-    return res.json({ status: getLoaderStatus(), message: getLoaderMessage() });
+    return res.json({
+        status: getLoaderStatus(),
+        message: getLoaderMessage(),
+        msg_online:     getMessageForStatus('online'),
+        msg_manutencao: getMessageForStatus('manutencao'),
+        msg_offline:    getMessageForStatus('offline'),
+        broadcast:      getBroadcast()
+    });
 });
 
 app.post("/clear-penalty", (req, res) => {
@@ -944,24 +989,76 @@ tr:hover td{background:#1a1a1a;}
 </div>
 
 <!-- STATUS DO LOADER -->
-<div class="card" style="margin-bottom:16px;">
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
-  <div style="display:flex;align-items:center;gap:10px;">
-    <div style="font-size:14px;color:#e0e0e0;font-weight:500;">Status do Loader</div>
-    <span id="statusBadge" style="padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600;">carregando...</span>
+<div class="card" style="margin-bottom:16px;padding:20px;">
+
+  <!-- Header com status atual -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div style="font-size:15px;color:#e0e0e0;font-weight:500;">Status do Loader</div>
+      <span id="statusBadge" style="padding:3px 12px;border-radius:20px;font-size:12px;font-weight:600;">carregando...</span>
+    </div>
   </div>
-  <div style="display:flex;gap:8px;">
-    <button class="btn btn-success" onclick="setStatus('online')">🟢 Online</button>
-    <button class="btn btn-warn"    onclick="setStatus('manutencao')">🟡 Manutenção</button>
-    <button class="btn btn-danger"  onclick="setStatus('offline')">🔴 Offline</button>
+
+  <!-- 3 cards de status -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
+
+    <!-- Online -->
+    <div id="cardOnline" style="background:#0d1a0d;border:1px solid #1a3a1a;border-radius:10px;padding:14px;transition:border-color .2s;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#43a047;"></div>
+          <span style="font-size:13px;color:#8e8;font-weight:500;">Online</span>
+        </div>
+        <button class="btn btn-success" style="padding:5px 12px;font-size:11px;" onclick="setStatus('online')">Ativar</button>
+      </div>
+      <input type="text" id="msgOnline" placeholder="Mensagem quando online..." style="width:100%;font-family:'Segoe UI',sans-serif;font-size:12px;padding:7px 10px;background:#0a150a;border-color:#1a3a1a;">
+      <button onclick="salvarMsgStatus('online')" style="margin-top:7px;width:100%;padding:6px;background:#152a15;border:1px solid #204a20;border-radius:6px;color:#8e8;font-size:11px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='#1a381a'" onmouseout="this.style.background='#152a15'">Salvar mensagem</button>
+    </div>
+
+    <!-- Manutenção -->
+    <div id="cardManutencao" style="background:#1a1500;border:1px solid #3a3000;border-radius:10px;padding:14px;transition:border-color .2s;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#e6b800;"></div>
+          <span style="font-size:13px;color:#ee8;font-weight:500;">Manutenção</span>
+        </div>
+        <button class="btn btn-warn" style="padding:5px 12px;font-size:11px;" onclick="setStatus('manutencao')">Ativar</button>
+      </div>
+      <input type="text" id="msgManutencao" placeholder="Ex: Voltamos em 20 minutos" style="width:100%;font-family:'Segoe UI',sans-serif;font-size:12px;padding:7px 10px;background:#150f00;border-color:#3a3000;">
+      <button onclick="salvarMsgStatus('manutencao')" style="margin-top:7px;width:100%;padding:6px;background:#2a2515;border:1px solid #4a4020;border-radius:6px;color:#ee8;font-size:11px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='#333018'" onmouseout="this.style.background='#2a2515'">Salvar mensagem</button>
+    </div>
+
+    <!-- Offline -->
+    <div id="cardOffline" style="background:#1a0a0a;border:1px solid #3a1515;border-radius:10px;padding:14px;transition:border-color .2s;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#e53935;"></div>
+          <span style="font-size:13px;color:#e88;font-weight:500;">Offline</span>
+        </div>
+        <button class="btn btn-danger" style="padding:5px 12px;font-size:11px;" onclick="setStatus('offline')">Ativar</button>
+      </div>
+      <input type="text" id="msgOffline" placeholder="Ex: Servidor em manutenção" style="width:100%;font-family:'Segoe UI',sans-serif;font-size:12px;padding:7px 10px;background:#150505;border-color:#3a1515;">
+      <button onclick="salvarMsgStatus('offline')" style="margin-top:7px;width:100%;padding:6px;background:#2a1515;border:1px solid #4a2020;border-radius:6px;color:#e88;font-size:11px;cursor:pointer;transition:all .15s;" onmouseover="this.style.background='#3a1818'" onmouseout="this.style.background='#2a1515'">Salvar mensagem</button>
+    </div>
+
   </div>
-</div>
-<div style="display:flex;gap:8px;align-items:center;">
-  <input type="text" id="inputStatusMsg" placeholder="Mensagem para o loader (ex: Voltamos em 20 minutos)" style="flex:1;font-family:'Segoe UI',sans-serif;">
-  <button class="btn" onclick="salvarMensagem()">Salvar mensagem</button>
-</div>
-<div class="ok-msg" id="statusOk" style="margin-top:10px;"></div>
-<div class="err"    id="statusErr" style="margin-top:10px;"></div>
+
+  <!-- Broadcast -->
+  <div style="background:#1e1e1e;border:1px solid #2e2e2e;border-radius:10px;padding:14px;">
+    <div style="font-size:12px;color:#888;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
+      <div style="width:6px;height:6px;border-radius:50%;background:#5865F2;"></div>
+      Broadcast — envia mensagem imediata para todos os usuários logados
+    </div>
+    <div style="display:flex;gap:8px;">
+      <input type="text" id="inputBroadcast" placeholder="Digite a mensagem de broadcast..." style="flex:1;font-family:'Segoe UI',sans-serif;font-size:13px;">
+      <button class="btn" onclick="enviarBroadcast()" style="background:#1a1a2e;border-color:#2a2a5a;color:#aab;">Enviar</button>
+      <button class="btn btn-danger" onclick="limparBroadcast()" style="padding:10px 12px;">Limpar</button>
+    </div>
+    <div style="font-size:11px;color:#3a3a3a;margin-top:6px;" id="broadcastAtual">Nenhum broadcast ativo</div>
+  </div>
+
+  <div class="ok-msg" id="statusOk" style="margin-top:10px;"></div>
+  <div class="err"    id="statusErr" style="margin-top:10px;"></div>
 </div>
 
 <div class="tabs">
@@ -1069,7 +1166,15 @@ async function carregarStatus() {
         const r = await fetch('/get-server-status', {headers:{'x-admin-key':ADMIN_KEY}});
         const d = await r.json();
         atualizarBadge(d.status);
-        if(d.message) document.getElementById('inputStatusMsg').value = d.message;
+        destacarCardAtivo(d.status);
+        if(d.msg_online)     document.getElementById('msgOnline').value     = d.msg_online;
+        if(d.msg_manutencao) document.getElementById('msgManutencao').value = d.msg_manutencao;
+        if(d.msg_offline)    document.getElementById('msgOffline').value    = d.msg_offline;
+        if(d.broadcast) {
+            document.getElementById('inputBroadcast').value = d.broadcast;
+            document.getElementById('broadcastAtual').textContent = 'Broadcast ativo: "' + d.broadcast + '"';
+            document.getElementById('broadcastAtual').style.color = '#5865F2';
+        }
     } catch(e) {}
 }
 
@@ -1082,39 +1187,76 @@ function atualizarBadge(status) {
     badge.style.border = '1px solid ' + s.border;
 }
 
+function destacarCardAtivo(status) {
+    const cards = {online:'cardOnline', manutencao:'cardManutencao', offline:'cardOffline'};
+    const borders = {online:'#2a6a2a', manutencao:'#6a5a00', offline:'#6a2020'};
+    Object.keys(cards).forEach(k => {
+        const el = document.getElementById(cards[k]);
+        if(el) el.style.borderColor = k === status ? borders[k] : (k==='online'?'#1a3a1a':k==='manutencao'?'#3a3000':'#3a1515');
+    });
+}
+
 async function setStatus(status) {
-    const message = document.getElementById('inputStatusMsg').value.trim();
     try {
         const r = await fetch('/set-server-status', {
             method:'POST',
             headers:{'Content-Type':'application/json','x-admin-key':ADMIN_KEY},
-            body: JSON.stringify({status, message})
+            body: JSON.stringify({status})
         });
         const d = await r.json();
         if(d.success) {
             atualizarBadge(status);
-            showOk('statusOk', 'Status alterado para: ' + STATUS_STYLES[status].label + (message ? ' · "' + message + '"' : ''));
-        } else {
-            showErr('statusErr', d.message || 'Erro ao alterar status.');
-        }
+            destacarCardAtivo(status);
+            showOk('statusOk', 'Status alterado para: ' + STATUS_STYLES[status].label);
+        } else showErr('statusErr', d.message || 'Erro.');
     } catch(e) { showErr('statusErr', 'Erro de conexão.'); }
 }
 
-async function salvarMensagem() {
-    const status = document.getElementById('statusBadge').textContent.includes('Online') ? 'online'
-                 : document.getElementById('statusBadge').textContent.includes('Manutenção') ? 'manutencao' : 'offline';
-    const message = document.getElementById('inputStatusMsg').value.trim();
+async function salvarMsgStatus(status) {
+    const inputs = {online:'msgOnline', manutencao:'msgManutencao', offline:'msgOffline'};
+    const message = document.getElementById(inputs[status]).value.trim();
     try {
-        const r = await fetch('/set-server-status', {
+        const r = await fetch('/save-status-message', {
             method:'POST',
             headers:{'Content-Type':'application/json','x-admin-key':ADMIN_KEY},
             body: JSON.stringify({status, message})
         });
         const d = await r.json();
-        if(d.success) showOk('statusOk', 'Mensagem salva!');
+        if(d.success) showOk('statusOk', 'Mensagem salva para ' + STATUS_STYLES[status].label + '!');
         else showErr('statusErr', d.message || 'Erro.');
     } catch(e) { showErr('statusErr', 'Erro de conexão.'); }
 }
+
+async function enviarBroadcast() {
+    const message = document.getElementById('inputBroadcast').value.trim();
+    if(!message) return showErr('statusErr', 'Digite uma mensagem.');
+    try {
+        const r = await fetch('/set-broadcast', {
+            method:'POST',
+            headers:{'Content-Type':'application/json','x-admin-key':ADMIN_KEY},
+            body: JSON.stringify({message})
+        });
+        const d = await r.json();
+        if(d.success) {
+            document.getElementById('broadcastAtual').textContent = 'Broadcast ativo: "' + message + '"';
+            document.getElementById('broadcastAtual').style.color = '#5865F2';
+            showOk('statusOk', 'Broadcast enviado!');
+        } else showErr('statusErr', d.message || 'Erro.');
+    } catch(e) { showErr('statusErr', 'Erro de conexão.'); }
+}
+
+async function limparBroadcast() {
+    try {
+        await fetch('/set-broadcast', {method:'POST', headers:{'Content-Type':'application/json','x-admin-key':ADMIN_KEY}, body: JSON.stringify({message:''})});
+        document.getElementById('inputBroadcast').value = '';
+        document.getElementById('broadcastAtual').textContent = 'Nenhum broadcast ativo';
+        document.getElementById('broadcastAtual').style.color = '#3a3a3a';
+        showOk('statusOk', 'Broadcast limpo.');
+    } catch(e) {}
+}
+
+// Compat — função antiga não usada mais
+function salvarMensagem() {}
 
 carregarStatus();
 
